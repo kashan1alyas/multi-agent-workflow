@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import List
 
 from pydantic import ValidationError
@@ -44,9 +45,10 @@ def research(question: str) -> ResearchResult:
 
     # Step 3: Call ask_json with a system prompt telling the model to use ONLY the provided results
     system_prompt = (
-        "You are a market research assistant. Your task is to extract concrete, verifiable facts "
-        "from the provided search results ONLY. Do not use any external knowledge. "
-        "If a fact is not clearly supported by the results, do not include it.\n\n"
+        "You are a market research assistant. Extract only CONCRETE facts from the provided search results: "
+        "numbers, prices, dates, named companies, named policies or regulations. "
+        "Skip opinions, marketing language, and vague statements like 'gaining popularity'. "
+        "Avoid duplicate facts. Return at most 4 facts per source URL. Return fewer facts instead of padding. "
         "Format your response as JSON with the following structure:\n"
         "{ \"facts\": [ { \"claim\": \"...\", \"source_url\": \"...\" } ] }\n\n"
         "Only include facts that are directly supported by the results. Each fact must have a "
@@ -58,6 +60,7 @@ def research(question: str) -> ResearchResult:
     from ..llm import ask_json
     from ..schemas import ResearchResult
 
+    llm_start = time.time()
     try:
         result: ResearchResult = ask_json(
             system=system_prompt,
@@ -68,6 +71,8 @@ def research(question: str) -> ResearchResult:
     except Exception as e:
         logger.error(f"LLM research call failed: {e}")
         return ResearchResult(question=question, facts=[])
+    llm_elapsed = time.time() - llm_start
+    logger.info(f"LLM call finished in {llm_elapsed:.2f}s")
 
     # Step 4: Anti-hallucination guard - drop any fact whose source_url is not in the search results
     valid_facts = []

@@ -23,6 +23,16 @@ def main():
         default="What are the main trends in electric scooters in Pakistan?",
         help="The research question to answer",
     )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Generate a research plan with sections and search questions for the default question",
+    )
+    parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="Generate a research draft with sections from verified facts",
+    )
     args = parser.parse_args()
 
     question = args.question
@@ -40,25 +50,64 @@ def main():
     logger.info(f" {provider_label} | {' | '.join(key_fingerprints)}")
     logger.info(f"Starting research for: '{question}'")
 
-    result: ResearchResult = research(question=question)
-
-    # Print numbered facts with source URLs
-    print(f"\nResearch question: {result.question}\n")
-    if result.facts:
-        for i, fact in enumerate(result.facts, 1):
-            print(f"  {i}. {fact.claim}")
-            print(f"     Source: {fact.source_url}")
+    if args.plan:
+        from app.agents.planner import plan
+        logger.info(f"Generating research plan for: '{question}'")
+        result = plan(question)
+        print(f"\nResearch Plan: {result.topic}\n")
+        for i, section in enumerate(result.sections, 1):
+            print(f"  {i}. {section.title}")
+            print(f"     Question: {section.question}")
+            print(f"     Search query: {section.search_query}")
+        print(f"\n--- Plan Summary ---")
+        print(f"Sections: {len(result.sections)}")
+    elif args.draft:
+        from app.agents.researcher import research
+        from app.agents.writer import write_section
+        from app.schemas import Section, SectionDraft, ResearchResult
+        
+        logger.info(f"Generating research draft for: '{question}'")
+        research_result: ResearchResult = research(question=question)
+        
+        print(f"\nResearch question: {research_result.question}\n")
+        print(f"Facts found: {len(research_result.facts)}")
+        
+        if not research_result.facts:
+            print("  No verifiable facts found.")
+        else:
+            for i, fact in enumerate(research_result.facts, 1):
+                print(f"  {i}. {fact.claim} - {fact.source_url}")
+            
+            # Draft a section using the provided facts
+            section = Section(title="Key Findings", question=question, search_query="electric scooters Pakistan")
+            draft = write_section(section, research_result.facts)
+            
+            if isinstance(draft, str):
+                print(f"\nDraft: {draft}")
+            else:
+                print(f"\nDraft - {draft.title}:")
+                print(draft.content)
+                print(f"\nSource URLs used: {draft.source_urls}")
     else:
-        print("  No verifiable facts found.")
+        result: ResearchResult = research(question=question)
 
-    print(f"\n--- Summary ---")
-    print(f"Facts returned: {len(result.facts)}")
+        # Print numbered facts with source URLs
+        print(f"\nResearch question: {result.question}\n")
+        if result.facts:
+            for i, fact in enumerate(result.facts, 1):
+                print(f"  {i}. {fact.claim}")
+                print(f"     Source: {fact.source_url}")
+        else:
+            print("  No verifiable facts found.")
 
-    # Count dropped facts: these would be facts whose source_url wasn't in the search results.
-    # Since researcher.py already filters them, we just report the count.
-    # For now, we can't easily compute "dropped" without re-running search, but we report the result count.
-    # We'll just note the number of facts found.
-    print(f"Facts after URL guard: {len(result.facts)}")
+        print(f"\n--- Summary ---")
+        print(f"Facts returned: {len(result.facts)}")
+
+        # Count dropped facts: these would be facts whose source_url wasn't in the search results.
+        # Since researcher.py already filters them, we just report the count.
+        # For now, we can't easily compute "dropped" without re-running search, but we report the result count.
+        # We'll just note the number of facts found.
+        print(f"Facts after URL guard: {len(result.facts)}")
 
 
 if __name__ == "__main__":
