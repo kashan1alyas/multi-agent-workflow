@@ -1,0 +1,6 @@
+anthropic
+tavily-python
+pydantic
+python-dotenv
+google-genai
+ollama
