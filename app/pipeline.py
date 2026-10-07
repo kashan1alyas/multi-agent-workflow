@@ -8,7 +8,7 @@ from app.schemas import Plan, SectionDraft, Report, Fact, SectionResult, Issue
 from app.agents.planner import plan
 from app.agents.researcher import research
 from app.agents.writer import write_section
-from app.agents.revision import revise_until_approved
+from app.agents.revision import MAX_REVISION_ROUNDS, revise_until_approved
 from app.llm import ask_json
 from app.cache import cache_get, cache_set, is_cache_enabled, toggle_cache
 
@@ -19,54 +19,11 @@ import os
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 
 
-def _run_with_retries(
-    func,
-    args: tuple = (),
-    kwargs: dict = None,
-    max_attempts: int = 3,
-    backoff_seconds: int = 20,
-    error_msg: str = "",
-) -> Optional:
-    """Run a function with retry logic for 429 rate-limit errors.
-
-    For PER_DAY daily quota errors, stop immediately without retrying.
-    All other 429 errors keep the 20-second retry, max 3 attempts.
-    """
-    if kwargs is None:
-        kwargs = {}
-    attempt = 0
-    while attempt < max_attempts:
-        try:
-            result = func(*args, **kwargs)
-            return result
-        except Exception as e:
-            err_str = str(e)
-            # Check for daily quota exhaustion (PerDay in error text)
-            if "PerDay" in err_str:
-                logger.error(
-                    "Daily free quota exhausted, retry later or switch model/provider. "
-                    f"Error: {err_str}"
-                )
-                raise RuntimeError(
-                    "Daily free quota exhausted, retry later or switch model/provider."
-                ) from e
-            # Check for rate-limit / 429 errors
-            is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "too many" in err_str.lower()
-            attempt += 1
-            if is_rate_limit and attempt < max_attempts:
-                logger.warning(f"{error_msg} Attempt {attempt}/{max_attempts} failed with rate-limit error. Waiting {backoff_seconds}s...")
-                time.sleep(backoff_seconds)
-                continue
-            else:
-                logger.error(f"{error_msg} All {max_attempts} attempts failed. Last error: {err_str}")
-                return None
-    return None
-
-
 def run_pipeline(
     topic: str,
     max_sections: Optional[int] = None,
     use_cache: bool = True,
+    max_rounds: int = MAX_REVISION_ROUNDS,
 ) -> Optional[Report]:
     """Run the full research pipeline for a given topic.
 
@@ -129,18 +86,24 @@ def run_pipeline(
         section_num = i
         logger.info(f"Step 2.{section_num}: Researching section '{section_plan.title}'...")
 
-        # Research the question for this section
-        research_kwargs = {"question": section_plan.question}
-        research_result = _run_with_retries(
-            research,
-            kwargs=research_kwargs,
-            max_attempts=3,
-            backoff_seconds=20,
-            error_msg=f"Section {section_num} research",
+        # Research with the concise query while retaining the full question for extraction.
+        logger.info(
+            "Section %d final search_query: %s",
+            section_num,
+            section_plan.search_query,
         )
+        research_start = time.time()
+        research_result = research(
+            question=section_plan.question,
+            search_query=section_plan.search_query,
+        )
+        research_elapsed = time.time() - research_start
 
         if research_result is None or not research_result.facts:
-            logger.warning(f"Section {section_num}: No facts retrieved, marking as unverified.")
+            logger.warning(
+                "Section %d: No facts retrieved, marking as insufficient evidence.",
+                section_num,
+            )
             section_results.append(
                 SectionResult(
                     draft=SectionDraft(
@@ -153,21 +116,26 @@ def run_pipeline(
                     sources=[],
                 )
             )
-            elapsed = time.time() - section_research_start if 'section_research_start' in dir() else 0
-            logger.info(f"Section {section_num} research finished in {elapsed:.2f}s (no facts)")
+            logger.info(
+                "Section %d research finished in %.2fs (no facts)",
+                section_num,
+                research_elapsed,
+            )
             continue
 
         logger.info(
-            f"Section {section_num} research finished in "
-            f"{len(research_result.facts)} facts"
+            "Section %d research finished in %.2fs (%d facts)",
+            section_num,
+            research_elapsed,
+            len(research_result.facts),
         )
 
         # Use revise_until_approved to write and review the draft
         logger.info(f"Section {section_num}: Starting write+review cycle...")
         revise_result = revise_until_approved(
-            question=section_plan.question,
+            question=section_plan.title,
             facts=research_result.facts,
-            max_rounds=3,
+            max_rounds=max_rounds,
         )
 
         # Collect source URLs from the draft
@@ -209,9 +177,21 @@ def print_report(report: Report) -> None:
     print(f"\n=== Report: {report.topic} ===\n")
     passed_count = 0
     failed_count = 0
+    insufficient_count = 0
     for i, section in enumerate(report.sections, 1):
-        status = "PASS" if section.passed else "FAIL"
-        if section.passed:
+        insufficient_evidence = any(
+            issue.problem == "no facts retrieved" for issue in section.issues
+        )
+        status = (
+            "PASS"
+            if section.passed
+            else "INSUFFICIENT EVIDENCE"
+            if insufficient_evidence
+            else "FAIL"
+        )
+        if insufficient_evidence:
+            insufficient_count += 1
+        elif section.passed:
             passed_count += 1
         else:
             failed_count += 1
@@ -223,6 +203,9 @@ def print_report(report: Report) -> None:
             for issue in section.issues:
                 print(f"       - '{issue.claim}': {issue.problem}")
     print(f"\n  Total sections: {len(report.sections)}")
-    print(f"  Passed: {passed_count}, Failed: {failed_count}")
+    print(
+        f"  Passed: {passed_count}, Failed reviews: {failed_count}, "
+        f"Insufficient evidence: {insufficient_count}"
+    )
     print(f"  Total deduplicated sources: {len(report.sources)}")
     print(f"  Sources: {report.sources}\n")

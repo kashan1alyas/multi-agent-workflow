@@ -1,10 +1,16 @@
 import json
-import os
 import logging
 import time
 from typing import Any, Dict
 
-from .schemas import Fact, ResearchResult
+from .config import (
+    ANTHROPIC_API_KEY,
+    ANTHROPIC_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    LLM_PROVIDER,
+    OLLAMA_MODEL,
+)
 from app.cache import cache_get, cache_set
 
 logger = logging.getLogger(__name__)
@@ -38,7 +44,7 @@ def ask(system: str, user: str) -> str:
     Raises:
         RuntimeError: If all retry attempts are exhausted.
     """
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+    provider = LLM_PROVIDER
 
     for attempt in range(ASK_MAX_ATTEMPTS):
         try:
@@ -52,12 +58,31 @@ def ask(system: str, user: str) -> str:
                 raise ValueError(f"Unknown LLM provider: {provider}")
         except Exception as e:
             err_str = str(e)
-            # Check for rate limit (429) or timeout errors
-            is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "too many" in err_str.lower()
-            is_timeout = "timeout" in err_str.lower() or "timed out" in err_str.lower()
+            lowered_error = err_str.lower()
+            is_daily_quota = "perday" in lowered_error
+            is_client_error = any(
+                code in lowered_error for code in ("400", "401", "403", "404")
+            )
+            is_rate_limit = (
+                "429" in lowered_error
+                and not is_daily_quota
+                and any(
+                    marker in lowered_error
+                    for marker in (
+                        "rate",
+                        "too many",
+                        "perminute",
+                        "per-minute",
+                        "per minute",
+                    )
+                )
+            )
+            is_timeout = "timeout" in lowered_error or "timed out" in lowered_error
 
-            if attempt < ASK_MAX_ATTEMPTS - 1 and (is_rate_limit or is_timeout):
-                # Exponential backoff
+            if is_daily_quota or is_client_error or not (is_rate_limit or is_timeout):
+                raise RuntimeError(err_str) from e
+
+            if attempt < ASK_MAX_ATTEMPTS - 1:
                 backoff = ASK_BASE_BACKOFF * (2 ** attempt)
                 logger.warning(
                     f"Provider error on attempt {attempt + 1}/{ASK_MAX_ATTEMPTS}: {err_str}. "
@@ -66,18 +91,14 @@ def ask(system: str, user: str) -> str:
                 time.sleep(backoff)
                 continue
             else:
-                # Final attempt failed or non-retriable error
-                raise RuntimeError(
-                    f"LLM provider {provider} call failed after {ASK_MAX_ATTEMPTS} attempts. "
-                    f"Last error: {err_str}"
-                ) from e
+                raise RuntimeError(err_str) from e
 
 
 def _ask_gemini(system: str, user: str) -> str:
     from google import genai as google_genai
-    client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    client = google_genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        model=GEMINI_MODEL,
         config={"system_instruction": system},
         contents=user,
     )
@@ -87,7 +108,7 @@ def _ask_gemini(system: str, user: str) -> str:
 def _ask_ollama(system: str, user: str) -> str:
     import ollama
     response = ollama.chat(
-        model=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+        model=OLLAMA_MODEL,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
     )
     return response["message"]["content"]
@@ -95,9 +116,9 @@ def _ask_ollama(system: str, user: str) -> str:
 
 def _ask_anthropic(system: str, user: str) -> str:
     import anthropic
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     response = client.messages.create(
-        model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
+        model=ANTHROPIC_MODEL,
         max_tokens=1000,
         system=system,
         messages=[{"role": "user", "content": user}],
@@ -126,15 +147,15 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
     Raises:
         ValueError: If validation fails after all retries.
     """
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+    provider = LLM_PROVIDER
 
     # Resolve the model name for the active provider
     if provider == "gemini":
-        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model = GEMINI_MODEL
     elif provider == "ollama":
-        model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        model = OLLAMA_MODEL
     elif provider == "anthropic":
-        model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+        model = ANTHROPIC_MODEL
     else:
         model = ""
 

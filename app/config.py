@@ -43,31 +43,19 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
+# Load credentials once; validate only the selected provider's key below.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+
 # Conditionally require keys based on selected provider
 if LLM_PROVIDER == "gemini":
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     _validate_key("GEMINI_API_KEY", GEMINI_API_KEY)
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # optional if not used
-    ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
-    # TAVILY is always required for search
-    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-    _validate_key("TAVILY_API_KEY", TAVILY_API_KEY)
 elif LLM_PROVIDER == "ollama":
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")  # not used
-    _validate_key("GEMINI_API_KEY", GEMINI_API_KEY)
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # optional if not used
-    ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
-    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-    _validate_key("TAVILY_API_KEY", TAVILY_API_KEY)
+    pass
 elif LLM_PROVIDER == "anthropic":
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # optional if not used
-    _validate_key("GEMINI_API_KEY", GEMINI_API_KEY)
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
     _validate_key("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
-    ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
-    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-    _validate_key("TAVILY_API_KEY", TAVILY_API_KEY)
 else:
     raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER}. Choose from: gemini, ollama, anthropic")
+
+_validate_key("TAVILY_API_KEY", TAVILY_API_KEY)

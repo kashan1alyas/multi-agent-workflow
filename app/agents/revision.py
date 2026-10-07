@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Optional
 
 from ..schemas import SectionDraft, Fact
 from ..agents.writer import write_section
@@ -7,8 +7,14 @@ from ..agents.reviewer import review_section
 
 logger = logging.getLogger(__name__)
 
+MAX_REVISION_ROUNDS = 2
 
-def revise_until_approved(question: str, facts: List[Fact], max_rounds: int = 3) -> dict:
+
+def revise_until_approved(
+    question: str,
+    facts: List[Fact],
+    max_rounds: int = MAX_REVISION_ROUNDS,
+) -> dict:
     """Write a draft, review it, and retry on failures until approved or max_rounds reached.
 
     Steps:
@@ -43,6 +49,13 @@ def revise_until_approved(question: str, facts: List[Fact], max_rounds: int = 3)
         last_issues = review.issues
 
         logger.info(f"Reviewer found {len(last_issues)} issues in round {round_num}")
+        for issue in last_issues:
+            logger.info(
+                "Review issue in round %d: claim=%s | problem=%s",
+                round_num,
+                issue.claim,
+                issue.problem,
+            )
 
         # Step 3: Check if approved
         if review.passed:
@@ -110,7 +123,11 @@ if __name__ == "__main__":
     print("Revision test: bad first draft")
     print("=" * 60)
 
-    result = revise_until_approved(question, facts, max_rounds=3)
+    result = revise_until_approved(
+        question,
+        facts,
+        max_rounds=MAX_REVISION_ROUNDS,
+    )
 
     print()
     print("=" * 60)

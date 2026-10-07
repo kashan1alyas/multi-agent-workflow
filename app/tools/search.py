@@ -41,7 +41,17 @@ def search_web(query: str, max_results: int = 5) -> List[Dict[str, str]]:
             query=query,
             max_results=max_results,
             include_raw_content=True,
-            exclude_domains=["youtube.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "pinterest.com"],
+            exclude_domains=[
+                "youtube.com",
+                "facebook.com",
+                "instagram.com",
+                "tiktok.com",
+                "x.com",
+                "twitter.com",
+                "pinterest.com",
+                "linkedin.com",
+                "reddit.com",
+            ],
         )
         elapsed = time.time() - start_time
         logger.info(f"Tavily search completed in {elapsed:.2f}s")

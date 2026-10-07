@@ -5,6 +5,7 @@ import time
 
 from app.schemas import ResearchResult
 from app.agents.researcher import research
+from app.agents.revision import MAX_REVISION_ROUNDS
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +42,12 @@ def main():
         help="Maximum number of sections to process (for testing)",
     )
     parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=MAX_REVISION_ROUNDS,
+        help=f"Maximum writer/reviewer rounds per section (default: {MAX_REVISION_ROUNDS})",
+    )
+    parser.add_argument(
         "--no-cache",
         action="store_true",
         help="Disable disk cache (.cache/ folder)",
@@ -49,17 +56,18 @@ def main():
 
     question = args.question
 
-    # Log active provider and key fingerprints (first 5 chars only)
-    from app.config import LLM_PROVIDER, GEMINI_API_KEY, TAVILY_API_KEY, ANTHROPIC_API_KEY
-    provider_label = f"LLM_PROVIDER={LLM_PROVIDER}"
-    key_fingerprints = []
-    if GEMINI_API_KEY:
-        key_fingerprints.append(f"GEMINI_KEY={GEMINI_API_KEY[:5]}...")
-    if TAVILY_API_KEY:
-        key_fingerprints.append(f"TAVILY_KEY={TAVILY_API_KEY[:5]}...")
-    if ANTHROPIC_API_KEY:
-        key_fingerprints.append(f"ANTHROPIC_KEY={ANTHROPIC_API_KEY[:5]}...")
-    logger.info(f" {provider_label} | {' | '.join(key_fingerprints)}")
+    from app.config import (
+        ANTHROPIC_MODEL,
+        GEMINI_MODEL,
+        LLM_PROVIDER,
+        OLLAMA_MODEL,
+    )
+    active_model = {
+        "gemini": GEMINI_MODEL,
+        "ollama": OLLAMA_MODEL,
+        "anthropic": ANTHROPIC_MODEL,
+    }[LLM_PROVIDER]
+    logger.info("LLM_PROVIDER=%s | MODEL=%s", LLM_PROVIDER, active_model)
     logger.info(f"Starting research for: '{question}'")
 
     if args.research:
@@ -92,6 +100,7 @@ def main():
             question,
             max_sections=args.max_sections,
             use_cache=not args.no_cache,
+            max_rounds=args.max_rounds,
         )
 
         # Check if pipeline failed (returned None)
@@ -115,10 +124,27 @@ def main():
         
         # Print per-section summary
         passed = sum(1 for s in report.sections if s.passed)
-        failed = sum(1 for s in report.sections if not s.passed)
-        print(f"Sections passed: {passed}, failed: {failed}")
+        insufficient = sum(
+            1
+            for s in report.sections
+            if any(issue.problem == "no facts retrieved" for issue in s.issues)
+        )
+        failed = len(report.sections) - passed - insufficient
+        print(
+            f"Sections passed: {passed}, failed reviews: {failed}, "
+            f"insufficient evidence: {insufficient}"
+        )
         for i, s in enumerate(report.sections, 1):
-            status = "PASS" if s.passed else "FAIL"
+            insufficient_evidence = any(
+                issue.problem == "no facts retrieved" for issue in s.issues
+            )
+            status = (
+                "PASS"
+                if s.passed
+                else "INSUFFICIENT EVIDENCE"
+                if insufficient_evidence
+                else "FAIL"
+            )
             issue_count = len(s.issues)
             print(f"  {i}. {s.draft.title} [{status}] (issues: {issue_count})")
         

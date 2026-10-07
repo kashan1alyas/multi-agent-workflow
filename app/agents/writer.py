@@ -1,79 +1,91 @@
 import logging
 from typing import List, Optional
 
-from ..schemas import SectionDraft, Fact
+from pydantic import BaseModel
+
 from ..llm import ask_json
+from ..schemas import Fact, SectionDraft
 
 logger = logging.getLogger(__name__)
 
 
-def write_section(question: str, facts: List[Fact], feedback: Optional[str] = None) -> SectionDraft:
-    """Draft a section from verified facts, using only the provided evidence.
+class WriterOutput(BaseModel):
+    content: str
+    source_urls: list[str]
 
-    - Writes 1-3 short paragraphs using ONLY the provided facts.
-    - No outside knowledge or numbers (numbers from facts are kept as-is).
-    - If facts are thin (few facts or sparse content), indicates that.
-    - Drops any source_urls not present in the input facts.
-    - If zero facts are provided, returns "Not enough verified information found."
-    - When feedback is given, includes the reviewer's issues in the prompt
-      and instructs the model to fix them using only the provided facts.
 
-    Args:
-        question: The research question to answer.
-        facts: List of verified Fact objects with claims and source URLs.
-        feedback: Optional string of reviewer issues to fix (from review_section).
-
-    Returns:
-        A SectionDraft with title, content paragraphs, and filtered source URLs,
-        or a string message if there are no facts.
-    """
+def write_section(
+    question: str,
+    facts: List[Fact],
+    feedback: Optional[str] = None,
+) -> SectionDraft:
+    """Draft a section from verified facts and retain only their source URLs."""
     if not facts:
-        return "Not enough verified information found."
+        return SectionDraft(
+            title=question,
+            content="Not enough verified information found.",
+            source_urls=[],
+        )
 
-    # Build facts summary for the prompt
     facts_summary = "\n".join(
-        f"{i+1}. {f.claim} (source: {f.source_url})" for i, f in enumerate(facts)
+        f"{index}. {fact.claim} (source: {fact.source_url})"
+        for index, fact in enumerate(facts, 1)
     )
-
-    # Base system prompt
     system_prompt = (
-        "You are a market research writer. Your task is to draft a short section "
-        "(1-3 paragraphs) answering the research question using ONLY the provided "
-        "facts. Do NOT use any outside knowledge. Include relevant numbers, dates, "
-        "and claims directly from the facts. Write in a factual, neutral tone."
+        "You are a market research writer. Write 1 to 3 short paragraphs for a "
+        "market research report using ONLY the provided numbered facts. Do not "
+        "use outside knowledge, numbers that are not in the facts, or "
+        "superlatives unless a fact says so. If the facts are thin, say so in "
+        "the text. List the source URLs used."
     )
-
-    # Build user prompt with facts and optional feedback
-    user_prompt = f"""
-QUESTION: {question}
-
-FACTS:
-{facts_summary}
-
-Instructions:
-- Draft 1-3 short paragraphs that answer the question using ONLY the facts above.
-- Include relevant numbers, dates, and claims directly from the facts.
-- Write in a factual, neutral tone. Do NOT use outside knowledge.
-"""
-
-    # If feedback was provided (from reviewer), include it and instruct to fix
+    user_prompt = f"SECTION: {question}\n\nNUMBERED FACTS:\n{facts_summary}"
     if feedback:
         user_prompt += (
-            "\nPREVIOUS REVIEW ISSUES (must be fixed using only the provided facts):\n"
-            f"{feedback}\n"
-            "Please rewrite the draft correcting all identified issues, using only "
-            "the facts provided above. Do not add any new information beyond what "
-            "the facts support."
+            "\n\nYour previous draft had these problems: "
+            f"{feedback}. Rewrite the section fixing each one, removing "
+            "unsupported claims instead of rewording them."
         )
-    else:
-        user_prompt += "\nDraft the section now."
 
-    draft: SectionDraft = ask_json(
+    output: WriterOutput = ask_json(
         system=system_prompt,
         user=user_prompt,
-        schema=SectionDraft,
+        schema=WriterOutput,
         retries=2,
     )
-
-    logger.info(f"Drafted section '{question}' from {len(facts)} facts")
+    verified_urls = {fact.source_url for fact in facts}
+    source_urls = [
+        url for url in output.source_urls if url in verified_urls
+    ]
+    draft = SectionDraft(
+        title=question,
+        content=output.content,
+        source_urls=source_urls,
+    )
+    logger.info("Drafted section '%s' from %d facts", question, len(facts))
     return draft
+
+
+if __name__ == "__main__":
+    from ..cache import toggle_cache
+
+    toggle_cache(enabled=False)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    sample_facts = [
+        Fact(
+            claim="Brand X sells its scooter for Rs. 250,000.",
+            source_url="https://example.com/price",
+        ),
+        Fact(
+            claim="Brand X offers a 2-year battery warranty.",
+            source_url="https://example.com/warranty",
+        ),
+    ]
+    sample_draft = write_section(
+        "What are Brand X's scooter price and warranty?",
+        sample_facts,
+    )
+    print(sample_draft.content)
+    print("Sources:")
+    for source_url in sample_draft.source_urls:
+        print(f"- {source_url}")
