@@ -1,6 +1,5 @@
 import logging
-import time
-from typing import List
+from typing import List, Optional
 
 from pydantic import ValidationError
 
@@ -11,11 +10,11 @@ from ..tools.search import search_web
 logger = logging.getLogger(__name__)
 
 
-def research(question: str) -> ResearchResult:
+def research(question: str, search_query: Optional[str] = None) -> ResearchResult:
     """Research a question and return structured, verified facts with sources.
 
     Steps:
-        1. Search the web for the question.
+        1. Search the web for the question (using search_query if provided).
         2. Build a context string from the search results.
         3. Call ask_json to extract facts, instructing the model to use ONLY the provided results.
         4. Anti-hallucination guard: drop any fact whose source_url is not in the set
@@ -24,13 +23,19 @@ def research(question: str) -> ResearchResult:
 
     Args:
         question: The research question to answer.
+        search_query: Optional short search query (5-10 words) optimized for web search engines.
+            If not provided, the full question is used for searching.
 
     Returns:
         A ResearchResult containing the question and a list of verified facts.
+
+    Raises:
+        Any provider errors (invalid key, quota, network) propagate up; they are not caught.
     """
     # Step 1: Search the web
+    search_input = search_query if search_query else question
     logger.info(f"Research started: '{question}'")
-    search_results = search_web(question, max_results=5)
+    search_results = search_web(search_input, max_results=5)
     logger.info(f"Found {len(search_results)} search results")
 
     # Collect the set of source URLs from search results
@@ -60,19 +65,12 @@ def research(question: str) -> ResearchResult:
     from ..llm import ask_json
     from ..schemas import ResearchResult
 
-    llm_start = time.time()
-    try:
-        result: ResearchResult = ask_json(
-            system=system_prompt,
-            user=user_prompt,
-            schema=ResearchResult,
-            retries=2,
-        )
-    except Exception as e:
-        logger.error(f"LLM research call failed: {e}")
-        return ResearchResult(question=question, facts=[])
-    llm_elapsed = time.time() - llm_start
-    logger.info(f"LLM call finished in {llm_elapsed:.2f}s")
+    result: ResearchResult = ask_json(
+        system=system_prompt,
+        user=user_prompt,
+        schema=ResearchResult,
+        retries=2,
+    )
 
     # Step 4: Anti-hallucination guard - drop any fact whose source_url is not in the search results
     valid_facts = []
@@ -86,5 +84,7 @@ def research(question: str) -> ResearchResult:
             )
 
     # Step 5: Return result with valid facts only
+    # If the model returned zero valid facts (or all were dropped), return empty list
+    # Provider errors already propagated above - we only reach here on successful LLM call
     logger.info(f"Returning {len(valid_facts)} valid facts (dropped {len(result.facts) - len(valid_facts)})")
     return ResearchResult(question=question, facts=valid_facts)

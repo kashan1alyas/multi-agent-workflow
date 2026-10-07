@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+import time
 
 from app.schemas import ResearchResult
 from app.agents.researcher import research
@@ -24,14 +25,25 @@ def main():
         help="The research question to answer",
     )
     parser.add_argument(
-        "--plan",
+        "--research",
         action="store_true",
-        help="Generate a research plan with sections and search questions for the default question",
+        help="Run single-question research mode (old behavior)",
     )
     parser.add_argument(
-        "--draft",
+        "--pipeline",
         action="store_true",
-        help="Generate a research draft with sections from verified facts",
+        help="Run full pipeline: plan -> research -> write -> report",
+    )
+    parser.add_argument(
+        "--max-sections",
+        type=int,
+        default=None,
+        help="Maximum number of sections to process (for testing)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable disk cache (.cache/ folder)",
     )
     args = parser.parse_args()
 
@@ -50,44 +62,60 @@ def main():
     logger.info(f" {provider_label} | {' | '.join(key_fingerprints)}")
     logger.info(f"Starting research for: '{question}'")
 
-    if args.plan:
-        from app.agents.planner import plan
-        logger.info(f"Generating research plan for: '{question}'")
-        result = plan(question)
-        print(f"\nResearch Plan: {result.topic}\n")
-        for i, section in enumerate(result.sections, 1):
-            print(f"  {i}. {section.title}")
-            print(f"     Question: {section.question}")
-            print(f"     Search query: {section.search_query}")
-        print(f"\n--- Plan Summary ---")
-        print(f"Sections: {len(result.sections)}")
-    elif args.draft:
-        from app.agents.researcher import research
-        from app.agents.writer import write_section
-        from app.schemas import Section, SectionDraft, ResearchResult
-        
-        logger.info(f"Generating research draft for: '{question}'")
-        research_result: ResearchResult = research(question=question)
-        
-        print(f"\nResearch question: {research_result.question}\n")
-        print(f"Facts found: {len(research_result.facts)}")
-        
-        if not research_result.facts:
-            print("  No verifiable facts found.")
+    if args.research:
+        # Old single-question research mode
+        logger.info(f"Running research-only mode for: '{question}'")
+        result: ResearchResult = research(question=question)
+
+        print(f"\nResearch question: {result.question}\n")
+        if result.facts:
+            for i, fact in enumerate(result.facts, 1):
+                print(f"  {i}. {fact.claim}")
+                print(f"     Source: {fact.source_url}")
         else:
-            for i, fact in enumerate(research_result.facts, 1):
-                print(f"  {i}. {fact.claim} - {fact.source_url}")
-            
-            # Draft a section using the provided facts
-            section = Section(title="Key Findings", question=question, search_query="electric scooters Pakistan")
-            draft = write_section(section, research_result.facts)
-            
-            if isinstance(draft, str):
-                print(f"\nDraft: {draft}")
-            else:
-                print(f"\nDraft - {draft.title}:")
-                print(draft.content)
-                print(f"\nSource URLs used: {draft.source_urls}")
+            print("  No verifiable facts found.")
+
+        print(f"\n--- Summary ---")
+        print(f"Facts returned: {len(result.facts)}")
+        print(f"Facts after URL guard: {len(result.facts)}")
+
+    elif args.pipeline:
+        from app.pipeline import run_pipeline, print_report
+        from app.report import save_report
+
+        # Time the pipeline run
+        main._pipeline_start = time.time()
+        logger.info(f"Running pipeline for: '{question}'")
+
+        # Pass cache setting and max_sections to pipeline
+        report = run_pipeline(
+            question,
+            max_sections=args.max_sections,
+            use_cache=not args.no_cache,
+        )
+
+        # Check if pipeline failed (returned None)
+        if report is None:
+            print(
+                "Error: Pipeline did not complete successfully. "
+                "Check the logs above for details."
+            )
+            sys.exit(1)
+
+        # Save the report to disk
+        report_path = save_report(report)
+
+        total_time = time.time() - main._pipeline_start
+
+        # Print summary
+        print(f"\nReport saved to: {report_path}")
+        print(f"Total time: {total_time:.1f}s")
+        print(f"Sections completed: {len(report.sections)}")
+        print(f"Unique sources: {len(report.sources)}")
+        for i, s in enumerate(report.sections, 1):
+            print(f"  {i}. {s.title}")
+        print(f"Sources: {report.sources}")
+
     else:
         result: ResearchResult = research(question=question)
 
@@ -106,7 +134,6 @@ def main():
         # Count dropped facts: these would be facts whose source_url wasn't in the search results.
         # Since researcher.py already filters them, we just report the count.
         # For now, we can't easily compute "dropped" without re-running search, but we report the result count.
-        # We'll just note the number of facts found.
         print(f"Facts after URL guard: {len(result.facts)}")
 
 

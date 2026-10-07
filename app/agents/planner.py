@@ -30,6 +30,8 @@ def plan(topic: str) -> Plan:
         "4-6 research sections, each focusing on a different angle. For each section, "
         "provide a title, a full research question, and a short search query (5-10 words) "
         "optimized for a web search engine (use keywords, not a full sentence).\n\n"
+        "If the topic names a country, region, or city, every section's search_query must "
+        "include it.\n\n"
         "The sections must cover different angles such as: market size, trends, competitors, "
         "customers, risks, regulation, etc. No duplicate questions are allowed.\n\n"
         "Respond with valid JSON matching this schema:\n"

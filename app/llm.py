@@ -3,14 +3,16 @@ import os
 import logging
 from typing import Any, Dict
 
-from google import genai as google_genai
-import anthropic
-import ollama
-import pydantic
-
 from .schemas import Fact, ResearchResult
+from app.cache import cache_get, cache_set
 
 logger = logging.getLogger(__name__)
+
+
+def _llm_cache_key(provider: str, model: str, system: str, user: str) -> str:
+    """Create a cache key from provider, model, system, and user text."""
+    key_data = f"{provider}:{model}:{system}:{user}"
+    return key_data
 
 
 def ask(system: str, user: str) -> str:
@@ -39,6 +41,7 @@ def ask(system: str, user: str) -> str:
 
 
 def _ask_gemini(system: str, user: str) -> str:
+    from google import genai as google_genai
     client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     response = client.models.generate_content(
         model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
@@ -49,6 +52,7 @@ def _ask_gemini(system: str, user: str) -> str:
 
 
 def _ask_ollama(system: str, user: str) -> str:
+    import ollama
     response = ollama.chat(
         model=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -57,6 +61,7 @@ def _ask_ollama(system: str, user: str) -> str:
 
 
 def _ask_anthropic(system: str, user: str) -> str:
+    import anthropic
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     response = client.messages.create(
         model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
@@ -90,10 +95,27 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
     """
     provider = os.getenv("LLM_PROVIDER", "gemini").lower()
 
+    # Resolve the model name for the active provider
+    if provider == "gemini":
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    elif provider == "ollama":
+        model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    elif provider == "anthropic":
+        model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    else:
+        model = ""
+
     # Build the system prompt with schema hint
     schema_hint = f"\n\nOUTPUT REQUIREMENTS: Respond with valid JSON only. No prose, no markdown code fences, no explanations. The JSON must conform to this schema:\n{schema.model_json_schema()}"
 
     system_with_hint = system + schema_hint
+
+    # Check disk cache
+    cache_key = _llm_cache_key(provider, model, system, user)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info(f"LLM cache hit for key '{provider}/{model}'")
+        return schema.model_validate(cached)
 
     for attempt in range(1 + retries):
         try:
@@ -109,6 +131,8 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
             data = json.loads(cleaned)
             # Validate with Pydantic schema
             instance = schema.model_validate(data)
+            # Cache the result keyed by provider + model + system + user
+            cache_set(cache_key, instance.model_dump())
             logger.info(f"LLM JSON validation successful on attempt {attempt + 1}")
             return instance
         except json.JSONDecodeError as e:
