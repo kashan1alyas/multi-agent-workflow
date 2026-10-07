@@ -1,22 +1,21 @@
-import asyncio
 import logging
-import os
-import re
 import time
-from typing import List, Optional, Callable
+from typing import List, Optional
 
 from pydantic import ValidationError
 
-from app.schemas import Plan, SectionDraft, Report, Fact
+from app.schemas import Plan, SectionDraft, Report, Fact, SectionResult, Issue
 from app.agents.planner import plan
 from app.agents.researcher import research
 from app.agents.writer import write_section
+from app.agents.revision import revise_until_approved
 from app.llm import ask_json
 from app.cache import cache_get, cache_set, is_cache_enabled, toggle_cache
 
 logger = logging.getLogger(__name__)
 
 # Disk cache root: <project_root>/.cache/
+import os
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 
 
@@ -73,13 +72,18 @@ def run_pipeline(
 
     Steps:
         1. Plan: Break the topic into research sections.
-        2. For each section: research the question sequentially, then write the section.
-        3. Assemble the report with deduplicated source URLs.
+        2. For each section: research the question, then use revise_until_approved
+           to write and review the draft.
+        3. Assemble the report with deduplicated source URLs and per-section pass/fail status.
 
     If planning fails or zero sections complete, returns None (caller should
     print error and exit with nonzero code).
 
     If daily quota is exhausted, raises RuntimeError.
+
+    Each section is independently processed - if a section fails after max_rounds,
+    it is marked as unverified (passed=False) but the pipeline continues with
+    remaining sections.
 
     Args:
         topic: The research topic string.
@@ -87,8 +91,9 @@ def run_pipeline(
         use_cache: Whether to use disk cache.
 
     Returns:
-        A Report containing the topic, list of drafted sections, and deduplicated
-        source URLs, or None if the pipeline couldn't complete.
+        A Report containing the topic, per-section SectionResult objects with
+        draft/passed/issues/sources, and deduplicated source URLs,
+        or None if the pipeline couldn't complete.
     """
     toggle_cache(use_cache)
 
@@ -116,21 +121,16 @@ def run_pipeline(
         sections_to_process = sections_to_process[:max_sections]
         logger.info(f"Limited to {max_sections} sections (out of {len(plan_result.sections)} planned)")
 
-    all_sections: List[SectionDraft] = []
+    section_results: List[SectionResult] = []
     all_source_urls: set = set()
 
-    # === Step 2: Research + Write each section sequentially ===
+    # === Step 2: Research + Write+Review each section sequentially ===
     for i, section_plan in enumerate(sections_to_process, 1):
         section_num = i
         logger.info(f"Step 2.{section_num}: Researching section '{section_plan.title}'...")
-        section_research_start = time.time()
-
-        # Use search_query directly from the section plan
-        search_query = section_plan.search_query or section_plan.question
-        logger.info(f"Section {section_num} search_query: '{search_query}'")
 
         # Research the question for this section
-        research_kwargs = {"question": section_plan.question, "search_query": search_query}
+        research_kwargs = {"question": section_plan.question}
         research_result = _run_with_retries(
             research,
             kwargs=research_kwargs,
@@ -140,60 +140,65 @@ def run_pipeline(
         )
 
         if research_result is None or not research_result.facts:
-            logger.warning(f"Section {section_num}: No facts retrieved, skipping write.")
-            elapsed = time.time() - section_research_start
+            logger.warning(f"Section {section_num}: No facts retrieved, marking as unverified.")
+            section_results.append(
+                SectionResult(
+                    draft=SectionDraft(
+                        title=section_plan.title,
+                        content="Not enough verified information found.",
+                        source_urls=[],
+                    ),
+                    passed=False,
+                    issues=[Issue(claim="", problem="no facts retrieved")],
+                    sources=[],
+                )
+            )
+            elapsed = time.time() - section_research_start if 'section_research_start' in dir() else 0
             logger.info(f"Section {section_num} research finished in {elapsed:.2f}s (no facts)")
             continue
 
         logger.info(
-            f"Section {section_num} research finished in {time.time() - section_research_start:.2f}s: "
+            f"Section {section_num} research finished in "
             f"{len(research_result.facts)} facts"
         )
 
-        # Write the section from facts
-        write_start = time.time()
-        try:
-            draft: SectionDraft = write_section(section_plan, research_result.facts)
-        except RuntimeError as e:
-            # If daily quota exhausted, stop the whole run immediately
-            if "Daily free quota exhausted" in str(e):
-                raise
-            logger.error(f"Section {section_num} write failed: {e}")
-            elapsed = time.time() - section_research_start
-            logger.info(f"Section {section_num} finished in {elapsed:.2f}s (write error)")
-            continue
-        except Exception as e:
-            logger.error(f"Section {section_num} write failed: {e}")
-            elapsed = time.time() - section_research_start
-            logger.info(f"Section {section_num} finished in {elapsed:.2f}s (write error)")
-            continue
-
-        write_elapsed = time.time() - write_start
-        logger.info(
-            f"Section {section_num} write finished in {write_elapsed:.2f}s: "
-            f"'{draft.title}' with {len(draft.source_urls)} source URLs"
+        # Use revise_until_approved to write and review the draft
+        logger.info(f"Section {section_num}: Starting write+review cycle...")
+        revise_result = revise_until_approved(
+            question=section_plan.question,
+            facts=research_result.facts,
+            max_rounds=3,
         )
 
-        # Deduplicate source URLs
-        for url in draft.source_urls:
+        # Collect source URLs from the draft
+        section_sources = revise_result["draft"].source_urls if revise_result["draft"] else []
+
+        # Build the SectionResult
+        section_result = SectionResult(
+            draft=revise_result["draft"] if revise_result["draft"] else SectionDraft(
+                title=section_plan.title,
+                content="Not enough verified information found.",
+                source_urls=[],
+            ),
+            passed=revise_result["passed"],
+            issues=revise_result["issues"],
+            sources=section_sources,
+        )
+
+        for url in section_sources:
             all_source_urls.add(url)
 
-        all_sections.append(draft)
-        logger.info(f"Section {section_num} completed.")
+        section_results.append(section_result)
+        logger.info(f"Section {section_num} completed: passed={revise_result['passed']}, issues={len(revise_result['issues'])}")
 
-    # === Step 3: Check if any sections completed ===
-    if not all_sections:
-        logger.error("Zero sections completed. Cannot assemble a report.")
-        return None
-
-    total_elapsed = time.time() - start_time
+    # === Step 3: Assemble the report ===
     deduplicated_sources = list(all_source_urls)
 
-    logger.info(f"Pipeline finished in {total_elapsed:.2f}s: {len(all_sections)} sections, {len(deduplicated_sources)} deduplicated sources")
+    logger.info(f"Pipeline finished in {time.time() - start_time:.2f}s: {len(section_results)} sections, {len(deduplicated_sources)} deduplicated sources")
 
     report = Report(
         topic=topic,
-        sections=all_sections,
+        sections=section_results,
         sources=deduplicated_sources,
     )
     return report
@@ -202,10 +207,22 @@ def run_pipeline(
 def print_report(report: Report) -> None:
     """Print the report sections to console in a readable format."""
     print(f"\n=== Report: {report.topic} ===\n")
+    passed_count = 0
+    failed_count = 0
     for i, section in enumerate(report.sections, 1):
-        print(f"  {i}. {section.title}")
-        print(f"     Content: {section.content[:200]}{'...' if len(section.content) > 200 else ''}")
-        print(f"     Sources: {section.source_urls}")
+        status = "PASS" if section.passed else "FAIL"
+        if section.passed:
+            passed_count += 1
+        else:
+            failed_count += 1
+        print(f"  {i}. {section.draft.title} [{status}]")
+        print(f"     Content: {section.draft.content[:200]}{'...' if len(section.draft.content) > 200 else ''}")
+        print(f"     Sources: {section.sources}")
+        if section.issues:
+            print(f"     Issues: {len(section.issues)} issue(s)")
+            for issue in section.issues:
+                print(f"       - '{issue.claim}': {issue.problem}")
     print(f"\n  Total sections: {len(report.sections)}")
+    print(f"  Passed: {passed_count}, Failed: {failed_count}")
     print(f"  Total deduplicated sources: {len(report.sources)}")
     print(f"  Sources: {report.sources}\n")

@@ -1,92 +1,146 @@
 # Market Research Report Generator
 
-A multi-agent Python application for generating market research reports from web search results.
+This project turns a market-research question into a structured report by combining web search, fact extraction, drafting, and review loops. It is designed to reduce hallucinations by grounding every claim in search results and by checking drafts against the underlying evidence before a section is marked as passed.
 
-## Setup Steps
+## What the project does
 
-1. **Create a virtual environment:**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+The app follows a multi-agent pipeline:
+
+- The planner breaks a topic into multiple research sections.
+- The researcher fetches web results and extracts only concrete, source-backed facts.
+- The writer drafts each section from those facts.
+- The reviewer checks the draft for unsupported numbers, invented claims, and wrong attribution.
+- The report assembler combines accepted sections and a deduplicated source list into a final markdown report.
+
+The result is a concise, verifiable report for questions like: "What are the main trends in electric scooters in Pakistan?"
+
+## Architecture
+
+```mermaid
+flowchart LR
+    P[Planner] --> R[Researcher]
+    R --> W[Writer]
+    W <--> V[Reviewer]
+    V --> RP[Report]
+```
+
+This is the same flow the project implements: Planner -> Researcher -> Writer -> Reviewer -> Report, with the Writer and Reviewer iterating until the section is accepted or the retry limit is reached.
+
+## Windows setup
+
+1. Open PowerShell in the project root.
+2. Create and activate a virtual environment:
+
+   ```powershell
+   py -m venv venv
+   .\venv\Scripts\Activate.ps1
    ```
 
-2. **Install dependencies:**
-   ```bash
+3. Install dependencies:
+
+   ```powershell
    pip install -r requirements.txt
    ```
 
-3. **Configure API keys:**
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` and add your API keys:
-   - `GEMINI_API_KEY` — Get a free key from [Google AI Studio](https://aistudio.google.com/)
-   - `TAVILY_API_KEY` — Get a free key from [Tavily](https://tavily.com/)
+4. Copy the sample environment file and fill in your keys:
 
-4. **Run the application:**
-
-   ```bash
-   python main.py "your research question"
+   ```powershell
+   Copy-Item .env.example .env
+   notepad .env
    ```
 
-   This runs the **full pipeline** (plan → research → write → report) by default and generates
-   `reports/<topic-slug>.md`.
+5. Add your API credentials:
+   - `TAVILY_API_KEY` for web search
+   - provider keys depending on the model you want to use (`GEMINI_API_KEY` or `ANTHROPIC_API_KEY`)
+   - optionally set `LLM_PROVIDER` to `gemini`, `ollama`, or `anthropic`
 
-   ```bash
-   python main.py "your research question" --research
+6. Run the pipeline:
+
+   ```powershell
+   python main.py "What are the main trends in electric scooters in Pakistan?" --pipeline
    ```
 
-   Runs **single-question research mode** (old behavior): searches the web and prints verified facts
-   with source URLs.
+## Switching LLM providers
 
-   ```bash
-   python main.py "your research question" --pipeline
-   ```
+The active provider is selected by the `LLM_PROVIDER` value in `.env`:
 
-   Same as running without a flag.
-
-5. **Output location:** `reports/<topic-slug>.md` (added to `.gitignore`)
-
-## Project Structure
-
-```
-market-research-agents/
-├ .env.example      # Placeholder environment variables (never commit real keys)
-├ .gitignore        # Ignores venv/, .env, __pycache__/, *.pyc, reports/
-├ requirements.txt  # Python dependencies
-├ README.md         # This file
-├ main.py           # Entry point with argparse
-└ app/
-    ├── __init__.py
-    ├── config.py     # Loads .env, exposes settings, validates keys
-    ├── llm.py        # LLM wrapper (gemini | ollama | anthropic)
-    ├── schemas.py    # Pydantic models: Fact, ResearchResult, Report, SectionDraft
-    ├── agents/
-    │   ├── __init__.py
-    │   └── researcher.py  # Researcher agent: search + LLM + URL guard
-    └── tools/
-        ├── __init__.py
-        └── search.py  # Tavily web search wrapper
+```env
+LLM_PROVIDER=gemini
+# or:
+# LLM_PROVIDER=ollama
+# LLM_PROVIDER=anthropic
 ```
 
-## How It Works
+The project supports the following provider-specific settings in `.env`:
 
-1. **Search**: The researcher searches the web using Tavily (excluding YouTube, Facebook, Instagram, TikTok, X/Twitter, Pinterest).
-2. **LLM Extraction**: A language model extracts structured facts from the search results, instructed to use ONLY the provided results.
-3. **URL Guard**: Any fact whose `source_url` does not match a search result URL is discarded (anti-hallucination).
-4. **Writing**: Sections are drafted from verified facts only, no outside knowledge or padding.
-5. **Report**: Assembled into a markdown file with inline citations and a numbered Sources list.
+- `gemini`
+  - `GEMINI_API_KEY`
+  - `GEMINI_MODEL` (optional)
+- `ollama`
+  - `OLLAMA_MODEL`
+  - no API key required if your local Ollama server is already running
+- `anthropic`
+  - `ANTHROPIC_API_KEY`
+  - `ANTHROPIC_MODEL` (optional)
 
-## Week 1 Status Checklist
+The app validates the configured provider at startup. If a required key is missing or looks like a placeholder, it raises a clear error instead of silently using a broken configuration.
 
-- [x] Project structure created
-- [x] `.env.example` with all provider placeholders
-- [x] `.gitignore` configured
-- [x] `requirements.txt` with python-dotenv, pydantic, tavily-python, google-genai, ollama, anthropic
-- [x] `app/config.py` — loads .env, exposes constants, raises clear error on missing keys
-- [x] `app/schemas.py` — Pydantic models: Fact, ResearchResult, Report, SectionDraft
-- [x] `app/llm.py` — ask() and ask_json() with retry and markdown stripping
-- [x] `app/tools/search.py` — Tavily web search with error handling
-- [x] `app/agents/researcher.py` — research() with web search, LLM call, URL anti-hallucination guard
-- [x] `main.py` — argparse, clean output, logging
-- [ ] TODO: Week 2 — Add UI, database, additional agents
+## Running the pipeline
+
+Use the CLI entry point in `main.py`:
+
+```powershell
+python main.py "Your research question"
+```
+
+This runs the default full pipeline (plan → research → write → review → report).
+
+You can run the individual modes explicitly:
+
+```powershell
+python main.py "Your research question" --research
+python main.py "Your research question" --pipeline
+```
+
+Optional flags:
+
+```powershell
+python main.py "Your research question" --max-sections 3
+python main.py "Your research question" --no-cache
+```
+
+The generated report is saved under `reports/`.
+
+## Running tests
+
+From the project root:
+
+```powershell
+pytest
+```
+
+The test suite covers the research guardrail and the reviewer logic, including scenarios where facts are missing or drafts include unsupported numbers or invented claims.
+
+## Design decisions
+
+### Source-URL validation
+
+The researcher does not trust the model blindly. After the LLM extracts facts, each fact is checked to confirm that `source_url` exactly matches one of the URLs returned by the web search. Facts that do not match are dropped before they enter the draft pipeline. This is the main anti-hallucination guardrail.
+
+### Two-step reviewer
+
+The reviewer is intentionally two-stage:
+
+1. A deterministic rule checks numeric content in the draft against the fact pool to catch unsupported numbers and missing evidence.
+2. An LLM-based review scans the draft for unsupported claims, exaggerations, and wrong attribution.
+
+This combines a cheap, reliable check for numbers with a semantic pass for claims that cannot be reduced to a simple regex.
+
+### Why unverified sections are labeled rather than hidden
+
+If a section cannot be researched or cannot pass review, the pipeline does not silently omit it. Instead, it marks the section as failed and keeps the label, issue list, and source trail visible in the final report. This keeps the output honest: the user can see where evidence is weak without losing the overall structure of the report.
+
+## Notes
+
+- The project expects a valid `TAVILY_API_KEY` even when the model provider is set to Gemini or Anthropic because search is a required part of the workflow.
+- The code and report files are intentionally separated so generated outputs remain out of source control while the implementation stays explicit and reviewable.

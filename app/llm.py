@@ -1,12 +1,18 @@
 import json
 import os
 import logging
+import time
 from typing import Any, Dict
 
 from .schemas import Fact, ResearchResult
 from app.cache import cache_get, cache_set
 
 logger = logging.getLogger(__name__)
+
+
+# Retry configuration for provider errors
+ASK_MAX_ATTEMPTS = 3
+ASK_BASE_BACKOFF = 20  # seconds backoff for rate limits/timeouts
 
 
 def _llm_cache_key(provider: str, model: str, system: str, user: str) -> str:
@@ -18,6 +24,10 @@ def _llm_cache_key(provider: str, model: str, system: str, user: str) -> str:
 def ask(system: str, user: str) -> str:
     """Send one request to the LLM provider chosen by LLM_PROVIDER.
 
+    Includes retry with exponential backoff for provider errors (rate limit, timeout).
+    A final failure raises RuntimeError with a clear message instead of returning
+    empty text.
+
     Args:
         system: The system prompt.
         user: The user prompt.
@@ -26,18 +36,41 @@ def ask(system: str, user: str) -> str:
         The model's reply text.
 
     Raises:
-        ValueError: If the provider is unknown or the API call fails.
+        RuntimeError: If all retry attempts are exhausted.
     """
     provider = os.getenv("LLM_PROVIDER", "gemini").lower()
 
-    if provider == "gemini":
-        return _ask_gemini(system, user)
-    elif provider == "ollama":
-        return _ask_ollama(system, user)
-    elif provider == "anthropic":
-        return _ask_anthropic(system, user)
-    else:
-        raise ValueError(f"Unknown LLM provider: {provider}")
+    for attempt in range(ASK_MAX_ATTEMPTS):
+        try:
+            if provider == "gemini":
+                return _ask_gemini(system, user)
+            elif provider == "ollama":
+                return _ask_ollama(system, user)
+            elif provider == "anthropic":
+                return _ask_anthropic(system, user)
+            else:
+                raise ValueError(f"Unknown LLM provider: {provider}")
+        except Exception as e:
+            err_str = str(e)
+            # Check for rate limit (429) or timeout errors
+            is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "too many" in err_str.lower()
+            is_timeout = "timeout" in err_str.lower() or "timed out" in err_str.lower()
+
+            if attempt < ASK_MAX_ATTEMPTS - 1 and (is_rate_limit or is_timeout):
+                # Exponential backoff
+                backoff = ASK_BASE_BACKOFF * (2 ** attempt)
+                logger.warning(
+                    f"Provider error on attempt {attempt + 1}/{ASK_MAX_ATTEMPTS}: {err_str}. "
+                    f"Retrying in {backoff}s..."
+                )
+                time.sleep(backoff)
+                continue
+            else:
+                # Final attempt failed or non-retriable error
+                raise RuntimeError(
+                    f"LLM provider {provider} call failed after {ASK_MAX_ATTEMPTS} attempts. "
+                    f"Last error: {err_str}"
+                ) from e
 
 
 def _ask_gemini(system: str, user: str) -> str:

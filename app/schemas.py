@@ -31,8 +31,28 @@ class SectionDraft(BaseModel):
     source_urls: List[str] = Field(description="List of source URLs actually used in the content.")
 
 
+class Issue(BaseModel):
+    """A claim or fact problem found in a drafted section."""
+    claim: str = Field(description="The claim sentence or number that has an issue.")
+    problem: str = Field(description="Description of the problem (e.g. 'number not found in facts').")
+
+
+class Review(BaseModel):
+    """Review result for a drafted section."""
+    passed: bool = Field(description="True if no issues were found.")
+    issues: List[Issue] = Field(description="List of issues found in the draft.")
+
+
+class SectionResult(BaseModel):
+    """Result for a single pipeline section."""
+    draft: SectionDraft = Field(description="The drafted section content.")
+    passed: bool = Field(description="True if the draft was approved after review.")
+    issues: List[Issue] = Field(description="List of issues found (empty if passed=True).")
+    sources: List[str] = Field(description="Source URLs used for this section.")
+
+
 class Report(BaseModel):
     """A complete market research report."""
     topic: str = Field(description="The research topic.")
-    sections: List[SectionDraft] = Field(description="Drafted sections with content and sources.")
+    sections: List[SectionResult] = Field(description="Per-section results with draft, pass/fail, and sources.")
     sources: List[str] = Field(description="Deduplicated list of all source URLs used across all sections.")

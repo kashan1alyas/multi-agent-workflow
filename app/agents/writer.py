@@ -1,12 +1,13 @@
 import logging
-from typing import List
+from typing import List, Optional
 
-from ..schemas import SectionDraft, Fact, Section
+from ..schemas import SectionDraft, Fact
+from ..llm import ask_json
 
 logger = logging.getLogger(__name__)
 
 
-def write_section(section: Section, facts: List[Fact]) -> SectionDraft:
+def write_section(question: str, facts: List[Fact], feedback: Optional[str] = None) -> SectionDraft:
     """Draft a section from verified facts, using only the provided evidence.
 
     - Writes 1-3 short paragraphs using ONLY the provided facts.
@@ -14,11 +15,13 @@ def write_section(section: Section, facts: List[Fact]) -> SectionDraft:
     - If facts are thin (few facts or sparse content), indicates that.
     - Drops any source_urls not present in the input facts.
     - If zero facts are provided, returns "Not enough verified information found."
-    #  without calling the LLM.
+    - When feedback is given, includes the reviewer's issues in the prompt
+      and instructs the model to fix them using only the provided facts.
 
     Args:
-        section: The Section draft plan (title, question).
+        question: The research question to answer.
         facts: List of verified Fact objects with claims and source URLs.
+        feedback: Optional string of reviewer issues to fix (from review_section).
 
     Returns:
         A SectionDraft with title, content paragraphs, and filtered source URLs,
@@ -27,42 +30,50 @@ def write_section(section: Section, facts: List[Fact]) -> SectionDraft:
     if not facts:
         return "Not enough verified information found."
 
-    # Filter source URLs to only those present in the input facts
-    fact_urls = {f.source_url for f in facts}
-
-    # Build claim sentences from facts, keeping numbers as-is
-    claims = [f.claim for f in facts]
-
-    # Simple: create 1-3 short paragraphs from the claims
-    # We'll distribute claims across paragraphs
-    num_paragraphs = min(3, max(1, len(claims) // 2 + 1))
-
-    paragraphs = []
-    # Distribute claims evenly across paragraphs
-    for i in range(num_paragraphs):
-        start = i * (len(claims) // num_paragraphs)
-        end = start + (len(claims) // num_paragraphs) + (1 if i < len(claims) % num_paragraphs else 0)
-        chunk = claims[start:end]
-        if chunk:
-            # Build a simple paragraph sentence-joining the claims
-            sentence = " ".join(chunk) + "."
-            paragraphs.append(sentence)
-
-    # If we ended up with no real paragraphs (edge case), fallback
-    if not paragraphs:
-        paragraphs = [" ".join(claims) + "."]
-
-    content = "\n\n".join(paragraphs)
-
-    # Strip any numbers that might be pure standalone - but keep numbers embedded in text
-    # Actually, the spec says "no outside knowledge or numbers" but I think we keep fact numbers
-    # The key is we don't ADD numbers, we only use what's in facts
-
-    draft = SectionDraft(
-        title=section.title,
-        content=content,
-        source_urls=list(fact_urls),
+    # Build facts summary for the prompt
+    facts_summary = "\n".join(
+        f"{i+1}. {f.claim} (source: {f.source_url})" for i, f in enumerate(facts)
     )
 
-    logger.info(f"Drafted section '{section.title}' from {len(facts)} facts across {len(paragraphs)} paragraph(s)")
+    # Base system prompt
+    system_prompt = (
+        "You are a market research writer. Your task is to draft a short section "
+        "(1-3 paragraphs) answering the research question using ONLY the provided "
+        "facts. Do NOT use any outside knowledge. Include relevant numbers, dates, "
+        "and claims directly from the facts. Write in a factual, neutral tone."
+    )
+
+    # Build user prompt with facts and optional feedback
+    user_prompt = f"""
+QUESTION: {question}
+
+FACTS:
+{facts_summary}
+
+Instructions:
+- Draft 1-3 short paragraphs that answer the question using ONLY the facts above.
+- Include relevant numbers, dates, and claims directly from the facts.
+- Write in a factual, neutral tone. Do NOT use outside knowledge.
+"""
+
+    # If feedback was provided (from reviewer), include it and instruct to fix
+    if feedback:
+        user_prompt += (
+            "\nPREVIOUS REVIEW ISSUES (must be fixed using only the provided facts):\n"
+            f"{feedback}\n"
+            "Please rewrite the draft correcting all identified issues, using only "
+            "the facts provided above. Do not add any new information beyond what "
+            "the facts support."
+        )
+    else:
+        user_prompt += "\nDraft the section now."
+
+    draft: SectionDraft = ask_json(
+        system=system_prompt,
+        user=user_prompt,
+        schema=SectionDraft,
+        retries=2,
+    )
+
+    logger.info(f"Drafted section '{question}' from {len(facts)} facts")
     return draft

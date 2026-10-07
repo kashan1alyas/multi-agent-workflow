@@ -110,11 +110,20 @@ def main():
         # Print summary
         print(f"\nReport saved to: {report_path}")
         print(f"Total time: {total_time:.1f}s")
-        print(f"Sections completed: {len(report.sections)}")
+        print(f"Sections processed: {len(report.sections)}")
         print(f"Unique sources: {len(report.sources)}")
+        
+        # Print per-section summary
+        passed = sum(1 for s in report.sections if s.passed)
+        failed = sum(1 for s in report.sections if not s.passed)
+        print(f"Sections passed: {passed}, failed: {failed}")
         for i, s in enumerate(report.sections, 1):
-            print(f"  {i}. {s.title}")
-        print(f"Sources: {report.sources}")
+            status = "PASS" if s.passed else "FAIL"
+            issue_count = len(s.issues)
+            print(f"  {i}. {s.draft.title} [{status}] (issues: {issue_count})")
+        
+        # Print full report using the print_report helper
+        print_report(report)
 
     else:
         result: ResearchResult = research(question=question)
