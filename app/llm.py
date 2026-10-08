@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Retry configuration for provider errors
 ASK_MAX_ATTEMPTS = 3
 ASK_BASE_BACKOFF = 20  # seconds backoff for rate limits/timeouts
+GEMINI_RETRY_DELAYS = (2, 5, 10, 20)
 
 
 def _llm_cache_key(provider: str, model: str, system: str, user: str) -> str:
@@ -63,6 +64,11 @@ def ask(system: str, user: str) -> str:
         except Exception as e:
             err_str = str(e)
             lowered_error = err_str.lower()
+            if provider == "gemini":
+                raise RuntimeError(
+                    f"LLM provider {provider} call failed: {err_str}"
+                ) from e
+
             is_daily_quota = "perday" in lowered_error
             is_client_error = any(
                 code in lowered_error for code in ("400", "401", "403", "404")
@@ -106,20 +112,59 @@ def ask(system: str, user: str) -> str:
 def _ask_gemini(system: str, user: str) -> str:
     from google import genai as google_genai
     client = google_genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        config={"system_instruction": system},
-        contents=user,
-    )
-    usage = getattr(response, "usage_metadata", None)
-    if usage is not None:
-        metrics.record_tokens(
-            getattr(usage, "prompt_token_count", None)
-            or getattr(usage, "input_token_count", None),
-            getattr(usage, "candidates_token_count", None)
-            or getattr(usage, "output_token_count", None),
-        )
-    return response.text
+    for attempt in range(len(GEMINI_RETRY_DELAYS) + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                config={"system_instruction": system},
+                contents=user,
+            )
+            text = response.text
+            if not text:
+                raise RuntimeError("Gemini returned empty text.")
+            usage = getattr(response, "usage_metadata", None)
+            if usage is not None:
+                metrics.record_tokens(
+                    getattr(usage, "prompt_token_count", None)
+                    or getattr(usage, "input_token_count", None),
+                    getattr(usage, "candidates_token_count", None)
+                    or getattr(usage, "output_token_count", None),
+                )
+            return text
+        except Exception as e:
+            message = str(e)
+            lowered_message = message.lower()
+            if any(code in lowered_message for code in ("400", "401", "403", "404")):
+                raise RuntimeError(
+                    f"Gemini request failed: {message}"
+                ) from e
+
+            temporary_error = any(
+                marker in lowered_message
+                for marker in (
+                    "503",
+                    "429",
+                    "unavailable",
+                    "resource_exhausted",
+                    "timeout",
+                    "timed out",
+                )
+            )
+            if not temporary_error or attempt == len(GEMINI_RETRY_DELAYS):
+                raise RuntimeError(
+                    f"Gemini request failed after {attempt} retries: {message}"
+                ) from e
+
+            delay = GEMINI_RETRY_DELAYS[attempt]
+            logging.warning(
+                "Temporary Gemini provider error on attempt %d/%d: %s. "
+                "Retrying in %d seconds...",
+                attempt + 1,
+                len(GEMINI_RETRY_DELAYS) + 1,
+                message,
+                delay,
+            )
+            time.sleep(delay)
 
 
 def _ask_ollama(system: str, user: str) -> str:

@@ -1,0 +1,4 @@
+/* Reset and base styles */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: normal; }
+ul { list-style: none; margin: 0; padding: 0; }
