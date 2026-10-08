@@ -4,6 +4,7 @@ from typing import List, Optional
 from ..schemas import SectionDraft, Fact
 from ..agents.writer import write_section
 from ..agents.reviewer import review_section
+from ..metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,13 @@ def revise_until_approved(
         logger.info(f"--- Revision round {round_num}/{max_rounds} ---")
 
         # Step 1: Write a draft (with feedback from previous round if any)
-        draft = write_section(question, facts, feedback=current_feedback)
+        with metrics.stage("write"):
+            draft = write_section(question, facts, feedback=current_feedback)
         rounds_used += 1
 
         # Step 2: Review the draft
-        review = review_section(draft, facts)
+        with metrics.stage("review"):
+            review = review_section(draft, facts)
         last_issues = review.issues
 
         logger.info(f"Reviewer found {len(last_issues)} issues in round {round_num}")

@@ -6,6 +6,7 @@ from typing import List, Dict
 from tavily import TavilyClient
 
 from app.cache import cache_get, cache_set
+from app.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +30,13 @@ def search_web(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     cache_key = _search_cache_key(query, max_results)
     cached = cache_get(cache_key)
     if cached is not None:
+        metrics.record_search(cache_hit=True)
         logger.info(f"Tavily cache hit for query: '{query[:30]}...'")
         return cached
 
     try:
         start_time = time.time()
+        metrics.record_search()
         client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
         # Request full page content so we can extract detailed snippets
         # Exclude social media platforms to focus on substantive sources
@@ -51,6 +54,7 @@ def search_web(query: str, max_results: int = 5) -> List[Dict[str, str]]:
                 "pinterest.com",
                 "linkedin.com",
                 "reddit.com",
+                "scribd.com",
             ],
         )
         elapsed = time.time() - start_time

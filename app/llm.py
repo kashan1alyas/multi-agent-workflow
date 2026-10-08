@@ -12,6 +12,7 @@ from .config import (
     OLLAMA_MODEL,
 )
 from app.cache import cache_get, cache_set
+from app.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,13 @@ def ask(system: str, user: str) -> str:
     for attempt in range(ASK_MAX_ATTEMPTS):
         try:
             if provider == "gemini":
+                metrics.record_llm_call()
                 return _ask_gemini(system, user)
             elif provider == "ollama":
+                metrics.record_llm_call()
                 return _ask_ollama(system, user)
             elif provider == "anthropic":
+                metrics.record_llm_call()
                 return _ask_anthropic(system, user)
             else:
                 raise ValueError(f"Unknown LLM provider: {provider}")
@@ -80,7 +84,9 @@ def ask(system: str, user: str) -> str:
             is_timeout = "timeout" in lowered_error or "timed out" in lowered_error
 
             if is_daily_quota or is_client_error or not (is_rate_limit or is_timeout):
-                raise RuntimeError(err_str) from e
+                raise RuntimeError(
+                    f"LLM provider {provider} call failed: {err_str}"
+                ) from e
 
             if attempt < ASK_MAX_ATTEMPTS - 1:
                 backoff = ASK_BASE_BACKOFF * (2 ** attempt)
@@ -91,7 +97,10 @@ def ask(system: str, user: str) -> str:
                 time.sleep(backoff)
                 continue
             else:
-                raise RuntimeError(err_str) from e
+                raise RuntimeError(
+                    f"LLM provider {provider} call failed after "
+                    f"{ASK_MAX_ATTEMPTS} attempts. Last error: {err_str}"
+                ) from e
 
 
 def _ask_gemini(system: str, user: str) -> str:
@@ -102,6 +111,14 @@ def _ask_gemini(system: str, user: str) -> str:
         config={"system_instruction": system},
         contents=user,
     )
+    usage = getattr(response, "usage_metadata", None)
+    if usage is not None:
+        metrics.record_tokens(
+            getattr(usage, "prompt_token_count", None)
+            or getattr(usage, "input_token_count", None),
+            getattr(usage, "candidates_token_count", None)
+            or getattr(usage, "output_token_count", None),
+        )
     return response.text
 
 
@@ -168,6 +185,7 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
     cache_key = _llm_cache_key(provider, model, system, user)
     cached = cache_get(cache_key)
     if cached is not None:
+        metrics.record_llm_call(cache_hit=True)
         logger.info(f"LLM cache hit for key '{provider}/{model}'")
         return schema.model_validate(cached)
 

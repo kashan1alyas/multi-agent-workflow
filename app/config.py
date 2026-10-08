@@ -42,6 +42,8 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+INPUT_PRICE_PER_MTOK = float(os.getenv("INPUT_PRICE_PER_MTOK", "0"))
+OUTPUT_PRICE_PER_MTOK = float(os.getenv("OUTPUT_PRICE_PER_MTOK", "0"))
 
 # Load credentials once; validate only the selected provider's key below.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

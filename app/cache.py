@@ -5,20 +5,24 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache enabled flag
-_cache_enabled = True
+_enabled = True
 
 
-def is_cache_enabled() -> bool:
-    """Check if disk caching is enabled. Override/hook for --no-cache switch."""
-    return _cache_enabled
-
-
-def toggle_cache(enabled: bool) -> None:
+def set_enabled(enabled: bool) -> None:
     """Enable or disable disk caching."""
-    global _cache_enabled
-    _cache_enabled = enabled
-    logger.info(f"Cache {'enabled' if _cache_enabled else 'disabled'}")
+    global _enabled
+    _enabled = enabled
+    logger.info("Cache %s", "enabled" if _enabled else "disabled")
+
+
+def is_enabled() -> bool:
+    """Return whether disk caching is enabled."""
+    return _enabled
+
+
+# Keep the previous names as aliases for callers outside the pipeline.
+toggle_cache = set_enabled
+is_cache_enabled = is_enabled
 
 
 def _cache_filename(key: str) -> str:
@@ -27,18 +31,12 @@ def _cache_filename(key: str) -> str:
     return os.path.join(".cache", h + ".json")
 
 
-def is_cache_enabled() -> bool:
-    """Check if disk caching is enabled. Override/hook for --no-cache switch."""
-    # Default: enabled; main.py toggles this via the toggle_cache function
-    return True
-
-
 def cache_get(key: str):
     """Get a value from disk cache keyed by the given string.
 
     Returns the parsed JSON value, or None if not found or cache disabled.
     """
-    if not is_cache_enabled():
+    if not is_enabled():
         return None
     try:
         path = _cache_filename(key)
@@ -59,7 +57,7 @@ def cache_set(key: str, value: object) -> None:
     Writes the JSON-serializable value to .cache/<sha256(key)>.json.
     Creates the .cache/ folder if missing.
     """
-    if not is_cache_enabled():
+    if not is_enabled():
         return
     try:
         os.makedirs(".cache", exist_ok=True)

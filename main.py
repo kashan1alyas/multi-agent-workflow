@@ -1,11 +1,15 @@
 import argparse
+import json
 import logging
+import os
 import sys
 import time
 
 from app.schemas import ResearchResult
 from app.agents.researcher import research
 from app.agents.revision import MAX_REVISION_ROUNDS
+from app.metrics import metrics
+from app.cache import set_enabled
 
 # Configure logging
 logging.basicConfig(
@@ -53,6 +57,8 @@ def main():
         help="Disable disk cache (.cache/ folder)",
     )
     args = parser.parse_args()
+    if args.no_cache:
+        set_enabled(False)
 
     question = args.question
 
@@ -99,9 +105,20 @@ def main():
         report = run_pipeline(
             question,
             max_sections=args.max_sections,
-            use_cache=not args.no_cache,
             max_rounds=args.max_rounds,
         )
+        metrics_data = metrics.snapshot()
+        print(metrics.summary())
+        os.makedirs("reports", exist_ok=True)
+        from app.report import _slugify
+
+        metrics_path = os.path.join(
+            "reports",
+            f"{_slugify(question)}-metrics.json",
+        )
+        with open(metrics_path, "w", encoding="utf-8") as metrics_file:
+            json.dump(metrics_data, metrics_file, indent=2)
+        print(f"Metrics saved to: {metrics_path}")
 
         # Check if pipeline failed (returned None)
         if report is None:
