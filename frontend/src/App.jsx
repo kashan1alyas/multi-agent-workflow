@@ -26,6 +26,14 @@ export default function App() {
     };
   }, []);
 
+  const handleReset = () => {
+    stopPolling();
+    setStatus("idle");
+    setMessages([]);
+    setResult(null);
+    setError("");
+  };
+
   const handleSubmit = async (topic, maxQuestions) => {
     if (timerRef.current) return; // a poll is already running
 
@@ -75,6 +83,12 @@ export default function App() {
       {busy && <ProgressPanel status={status} messages={messages} />}
 
       {status === "done" && result && <ReportView result={result} />}
+
+      {(status === "done" || status === "failed") && (
+        <button type="button" className="secondary" onClick={handleReset}>
+          Start new research
+        </button>
+      )}
     </div>
   );
 }
