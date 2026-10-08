@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 import time
-from typing import Any, Dict
+from typing import Any
 
 from .config import (
     ANTHROPIC_API_KEY,
@@ -20,31 +21,33 @@ logger = logging.getLogger(__name__)
 # Retry configuration for provider errors
 ASK_MAX_ATTEMPTS = 3
 ASK_BASE_BACKOFF = 20  # seconds backoff for rate limits/timeouts
-GEMINI_RETRY_DELAYS = (2, 5, 10, 20)
+GEMINI_RETRY_DELAYS = (3, 8, 15, 30, 60)
+
+_TEMPORARY_WORDS = ("unavailable", "resource_exhausted", "timeout", "timed out")
+_TEMPORARY_CODE = re.compile(r"\b(503|429)\b")
+
+
+def _is_temporary_gemini_error(message: str) -> bool:
+    """True for errors worth retrying: overload, rate limit, timeout."""
+    lowered = message.lower()
+    if "perday" in lowered or "per day" in lowered:
+        return False  # daily quota will not recover within a retry window
+    if _TEMPORARY_CODE.search(lowered):
+        return True
+    return any(word in lowered for word in _TEMPORARY_WORDS)
 
 
 def _llm_cache_key(provider: str, model: str, system: str, user: str) -> str:
     """Create a cache key from provider, model, system, and user text."""
-    key_data = f"{provider}:{model}:{system}:{user}"
-    return key_data
+    return f"{provider}:{model}:{system}:{user}"
 
 
 def ask(system: str, user: str) -> str:
     """Send one request to the LLM provider chosen by LLM_PROVIDER.
 
-    Includes retry with exponential backoff for provider errors (rate limit, timeout).
-    A final failure raises RuntimeError with a clear message instead of returning
-    empty text.
-
-    Args:
-        system: The system prompt.
-        user: The user prompt.
-
-    Returns:
-        The model's reply text.
-
-    Raises:
-        RuntimeError: If all retry attempts are exhausted.
+    Gemini retries temporary errors inside _ask_gemini. Other providers retry
+    here with exponential backoff. A final failure raises RuntimeError with a
+    clear message instead of returning empty text.
     """
     provider = LLM_PROVIDER
 
@@ -64,6 +67,8 @@ def ask(system: str, user: str) -> str:
         except Exception as e:
             err_str = str(e)
             lowered_error = err_str.lower()
+
+            # Gemini already retried internally; do not retry again here.
             if provider == "gemini":
                 raise RuntimeError(
                     f"LLM provider {provider} call failed: {err_str}"
@@ -97,22 +102,28 @@ def ask(system: str, user: str) -> str:
             if attempt < ASK_MAX_ATTEMPTS - 1:
                 backoff = ASK_BASE_BACKOFF * (2 ** attempt)
                 logger.warning(
-                    f"Provider error on attempt {attempt + 1}/{ASK_MAX_ATTEMPTS}: {err_str}. "
-                    f"Retrying in {backoff}s..."
+                    "Provider error on attempt %d/%d: %s. Retrying in %ds...",
+                    attempt + 1,
+                    ASK_MAX_ATTEMPTS,
+                    err_str,
+                    backoff,
                 )
                 time.sleep(backoff)
                 continue
-            else:
-                raise RuntimeError(
-                    f"LLM provider {provider} call failed after "
-                    f"{ASK_MAX_ATTEMPTS} attempts. Last error: {err_str}"
-                ) from e
+
+            raise RuntimeError(
+                f"LLM provider {provider} call failed after "
+                f"{ASK_MAX_ATTEMPTS} attempts. Last error: {err_str}"
+            ) from e
 
 
 def _ask_gemini(system: str, user: str) -> str:
     from google import genai as google_genai
+
     client = google_genai.Client(api_key=GEMINI_API_KEY)
-    for attempt in range(len(GEMINI_RETRY_DELAYS) + 1):
+    max_retries = len(GEMINI_RETRY_DELAYS)
+
+    for attempt in range(max_retries + 1):
         try:
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
@@ -133,34 +144,21 @@ def _ask_gemini(system: str, user: str) -> str:
             return text
         except Exception as e:
             message = str(e)
-            lowered_message = message.lower()
-            if any(code in lowered_message for code in ("400", "401", "403", "404")):
-                raise RuntimeError(
-                    f"Gemini request failed: {message}"
-                ) from e
 
-            temporary_error = any(
-                marker in lowered_message
-                for marker in (
-                    "503",
-                    "429",
-                    "unavailable",
-                    "resource_exhausted",
-                    "timeout",
-                    "timed out",
-                )
-            )
-            if not temporary_error or attempt == len(GEMINI_RETRY_DELAYS):
+            if not _is_temporary_gemini_error(message):
+                # Bad key, bad model name, empty reply, daily quota, etc.
+                raise RuntimeError(f"Gemini request failed: {message}") from e
+
+            if attempt == max_retries:
                 raise RuntimeError(
-                    f"Gemini request failed after {attempt} retries: {message}"
+                    f"Gemini request failed after {max_retries} retries: {message}"
                 ) from e
 
             delay = GEMINI_RETRY_DELAYS[attempt]
-            logging.warning(
-                "Temporary Gemini provider error on attempt %d/%d: %s. "
-                "Retrying in %d seconds...",
+            logger.warning(
+                "Temporary Gemini error on attempt %d/%d: %s. Retrying in %d seconds...",
                 attempt + 1,
-                len(GEMINI_RETRY_DELAYS) + 1,
+                max_retries + 1,
                 message,
                 delay,
             )
@@ -169,15 +167,20 @@ def _ask_gemini(system: str, user: str) -> str:
 
 def _ask_ollama(system: str, user: str) -> str:
     import ollama
+
     response = ollama.chat(
         model=OLLAMA_MODEL,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
     )
     return response["message"]["content"]
 
 
 def _ask_anthropic(system: str, user: str) -> str:
     import anthropic
+
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     response = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -194,24 +197,11 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
     - Appends a JSON schema hint to the system prompt.
     - Strips markdown code fences from the reply.
     - Validates with the schema.
-    - On failure, retries by telling the model what was wrong.
+    - On failure, retries and tells the model what was wrong.
     - Raises ValueError after the last retry.
-
-    Args:
-        system: The system prompt.
-        user: The user prompt.
-        schema: A Pydantic BaseModel class to validate against.
-        retries: Number of retry attempts after initial failure.
-
-    Returns:
-        The validated Pydantic model instance.
-
-    Raises:
-        ValueError: If validation fails after all retries.
     """
     provider = LLM_PROVIDER
 
-    # Resolve the model name for the active provider
     if provider == "gemini":
         model = GEMINI_MODEL
     elif provider == "ollama":
@@ -221,9 +211,11 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
     else:
         model = ""
 
-    # Build the system prompt with schema hint
-    schema_hint = f"\n\nOUTPUT REQUIREMENTS: Respond with valid JSON only. No prose, no markdown code fences, no explanations. The JSON must conform to this schema:\n{schema.model_json_schema()}"
-
+    schema_hint = (
+        "\n\nOUTPUT REQUIREMENTS: Respond with valid JSON only. No prose, "
+        "no markdown code fences, no explanations. The JSON must conform to "
+        f"this schema:\n{schema.model_json_schema()}"
+    )
     system_with_hint = system + schema_hint
 
     # Check disk cache
@@ -231,77 +223,54 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
     cached = cache_get(cache_key)
     if cached is not None:
         metrics.record_llm_call(cache_hit=True)
-        logger.info(f"LLM cache hit for key '{provider}/{model}'")
+        logger.info("LLM cache hit for key '%s/%s'", provider, model)
         return schema.model_validate(cached)
 
     for attempt in range(1 + retries):
+        # Provider errors (already retried inside ask) propagate unchanged.
+        raw = ask(system_with_hint, user)
+
         try:
-            raw = ask(system_with_hint if attempt == 0 else _make_retry_system(system, attempt) + schema_hint, user)
-        except Exception as e:
-            # Provider call error - don't retry, propagate immediately with clear message
-            raise RuntimeError(f"LLM provider {provider} call failed: {e}") from e
-        
-        try:
-            # Strip markdown code fences if present
             cleaned = _strip_markdown_fences(raw)
-            # Parse JSON
             data = json.loads(cleaned)
-            # Validate with Pydantic schema
             instance = schema.model_validate(data)
-            # Cache the result keyed by provider + model + system + user
             cache_set(cache_key, instance.model_dump())
-            logger.info(f"LLM JSON validation successful on attempt {attempt + 1}")
+            logger.info("LLM JSON validation successful on attempt %d", attempt + 1)
             return instance
         except json.JSONDecodeError as e:
-            # JSON parsing error - retry with error feedback
             err_msg = str(e)
-            logger.warning(f"LLM JSON attempt {attempt + 1} failed: {err_msg}")
-            if attempt >= retries:
-                raise ValueError(
-                    f"LLM failed to produce valid JSON after {1 + retries} attempts. "
-                    f"Last error: {err_msg}"
-                )
-            system_with_hint = _add_retry_feedback(system, err_msg, attempt)
         except Exception as e:
-            # Pydantic validation error or other processing error
-            # Check if it's a Pydantic ValidationError to determine retry behavior
-            is_pydantic_error = type(e).__name__ == 'ValidationError'
-            if is_pydantic_error:
-                # Pydantic validation error - retry with error feedback (requirement 1)
-                err_msg = str(e)
-                logger.warning(f"LLM JSON attempt {attempt + 1} failed: {err_msg}")
-                if attempt >= retries:
-                    raise ValueError(
-                        f"LLM failed to produce valid JSON after {1 + retries} attempts. "
-                        f"Last error: {err_msg}"
-                    )
-                system_with_hint = _add_retry_feedback(system, err_msg, attempt)
-            else:
-                # Other error - propagate immediately (requirement 2)
-                raise RuntimeError(f"LLM JSON processing error: {str(e)}") from e
+            if type(e).__name__ != "ValidationError":
+                raise RuntimeError(f"LLM JSON processing error: {e}") from e
+            err_msg = str(e)
+
+        logger.warning("LLM JSON attempt %d failed: %s", attempt + 1, err_msg)
+        if attempt >= retries:
+            raise ValueError(
+                f"LLM failed to produce valid JSON after {1 + retries} attempts. "
+                f"Last error: {err_msg}"
+            )
+        # Tell the model what was wrong on the next attempt
+        system_with_hint = _add_retry_feedback(system, err_msg, attempt) + schema_hint
 
 
 def _strip_markdown_fences(text: str) -> str:
     """Remove leading/trailing markdown code fences (```json ... ```)."""
     text = text.strip()
     if text.startswith("```"):
-        # Find the end fence
         lines = text.split("\n")
-        # Remove leading ```json or ```
         if lines[0].strip().startswith("```"):
             lines = lines[1:]
-        # Remove trailing ```
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines)
     return text.strip()
 
 
-def _make_retry_system(system: str, attempt: int) -> str:
-    """Build a retry system prompt indicating which attempt we're on."""
-    return f"{system}\n\n--- RETRY {attempt + 1} --- Please fix the JSON output based on the error feedback below."
-
-
 def _add_retry_feedback(system: str, error: str, attempt: int) -> str:
     """Append error feedback to the system prompt for the next retry."""
-    return f"{system}\n\n--- ERROR ON ATTEMPT {attempt + 1} --- The previous JSON output was invalid. Error: {error}. Please output valid JSON conforming to the schema."
+    return (
+        f"{system}\n\n--- ERROR ON ATTEMPT {attempt + 1} --- "
+        f"The previous JSON output was invalid. Error: {error}. "
+        "Please output valid JSON conforming to the schema."
+    )
