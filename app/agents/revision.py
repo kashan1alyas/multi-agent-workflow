@@ -49,6 +49,8 @@ def revise_until_approved(
         # Step 2: Review the draft
         with metrics.stage("review"):
             review = review_section(draft, facts)
+        if round_num == 1:
+            metrics.record_first_round_review(passed=review.passed)
         last_issues = review.issues
 
         logger.info(f"Reviewer found {len(last_issues)} issues in round {round_num}")

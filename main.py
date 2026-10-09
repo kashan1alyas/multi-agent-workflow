@@ -40,6 +40,11 @@ def main():
         help="Run full pipeline: plan -> research -> write -> report",
     )
     parser.add_argument(
+        "--no-review",
+        action="store_true",
+        help="Write sections without running the reviewer.",
+    )
+    parser.add_argument(
         "--max-sections",
         type=int,
         default=None,
@@ -50,6 +55,17 @@ def main():
         type=int,
         default=MAX_REVISION_ROUNDS,
         help=f"Maximum writer/reviewer rounds per section (default: {MAX_REVISION_ROUNDS})",
+    )
+    parser.add_argument(
+        "--plan-file",
+        metavar="P",
+        help="Load a saved plan from P, or save the generated plan to P.",
+    )
+    parser.add_argument(
+        "--output-suffix",
+        metavar="S",
+        default="",
+        help="Append S to the generated report and metrics filenames.",
     )
     parser.add_argument(
         "--no-cache",
@@ -106,15 +122,20 @@ def main():
             question,
             max_sections=args.max_sections,
             max_rounds=args.max_rounds,
+            plan_file=args.plan_file,
+            no_review=args.no_review,
         )
         metrics_data = metrics.snapshot()
         print(metrics.summary())
         os.makedirs("reports", exist_ok=True)
         from app.report import _slugify
 
+        output_suffix = _slugify(args.output_suffix)
+        filename_suffix = f"-{output_suffix}" if output_suffix else ""
+
         metrics_path = os.path.join(
             "reports",
-            f"{_slugify(question)}-metrics.json",
+            f"{_slugify(question)}-metrics{filename_suffix}.json",
         )
         with open(metrics_path, "w", encoding="utf-8") as metrics_file:
             json.dump(metrics_data, metrics_file, indent=2)
@@ -129,7 +150,20 @@ def main():
             sys.exit(1)
 
         # Save the report to disk
-        report_path = save_report(report)
+        if filename_suffix:
+            staging_dir = os.path.join(
+                "reports",
+                f".{_slugify(question)}-staging",
+            )
+            staged_report_path = save_report(report, output_dir=staging_dir)
+            report_path = os.path.join(
+                "reports",
+                f"{_slugify(question)}{filename_suffix}.md",
+            )
+            os.replace(staged_report_path, report_path)
+            os.rmdir(staging_dir)
+        else:
+            report_path = save_report(report)
 
         total_time = time.time() - main._pipeline_start
 

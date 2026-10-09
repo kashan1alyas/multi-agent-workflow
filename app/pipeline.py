@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 import time
 from typing import List, Optional
 
@@ -23,6 +24,8 @@ def run_pipeline(
     topic: str,
     max_sections: Optional[int] = None,
     max_rounds: int = MAX_REVISION_ROUNDS,
+    plan_file: Optional[str] = None,
+    no_review: bool = False,
 ) -> Optional[Report]:
     """Run the full research pipeline for a given topic.
 
@@ -45,6 +48,8 @@ def run_pipeline(
         topic: The research topic string.
         max_sections: Maximum number of sections to process (None = all).
         max_rounds: Maximum write/review rounds per section.
+        plan_file: Optional path to load a plan from or save a newly generated plan to.
+        no_review: Draft sections without running the reviewer.
 
     Returns:
         A Report containing the topic, per-section SectionResult objects with
@@ -60,8 +65,23 @@ def run_pipeline(
     logger.info("Step 1: Planning section breakdown...")
     plan_start = time.time()
     try:
-        with metrics.stage("plan"):
-            plan_result: Plan = plan(topic)
+        plan_path = Path(plan_file) if plan_file else None
+        if plan_path is not None and plan_path.exists():
+            plan_result = Plan.model_validate_json(plan_path.read_text(encoding="utf-8"))
+            logger.info("Loaded plan from %s", plan_path)
+        else:
+            with metrics.stage("plan"):
+                plan_result = plan(
+                    topic,
+                    max_questions=max_sections if max_sections is not None else 5,
+                )
+            if plan_path is not None:
+                plan_path.parent.mkdir(parents=True, exist_ok=True)
+                plan_path.write_text(
+                    plan_result.model_dump_json(indent=2),
+                    encoding="utf-8",
+                )
+                logger.info("Saved plan to %s", plan_path)
         plan_elapsed = time.time() - plan_start
         logger.info(f"Planning completed in {plan_elapsed:.2f}s: {len(plan_result.sections)} sections")
     except Exception as e:
@@ -85,80 +105,117 @@ def run_pipeline(
     for i, section_plan in enumerate(sections_to_process, 1):
         section_num = i
         logger.info(f"Step 2.{section_num}: Researching section '{section_plan.title}'...")
-
-        # Research with the concise query while retaining the full question for extraction.
-        logger.info(
-            "Section %d final search_query: %s",
-            section_num,
-            section_plan.search_query,
-        )
-        research_start = time.time()
-        with metrics.stage("research"):
-            research_result = research(
-                question=section_plan.question,
-                search_query=section_plan.search_query,
-            )
-        research_elapsed = time.time() - research_start
-
-        if research_result is None or not research_result.facts:
-            logger.warning(
-                "Section %d: No facts retrieved, marking as insufficient evidence.",
+        try:
+            # Research with the concise query while retaining the full question for extraction.
+            logger.info(
+                "Section %d final search_query: %s",
                 section_num,
+                section_plan.search_query,
             )
+            research_start = time.time()
+            with metrics.stage("research"):
+                research_result = research(
+                    question=section_plan.question,
+                    search_query=section_plan.search_query,
+                )
+            research_elapsed = time.time() - research_start
+
+            if research_result is None or not research_result.facts:
+                logger.warning(
+                    "Section %d: No facts retrieved, marking as insufficient evidence.",
+                    section_num,
+                )
+                section_results.append(
+                    SectionResult(
+                        draft=SectionDraft(
+                            title=section_plan.title,
+                            content="Not enough verified information found.",
+                            source_urls=[],
+                        ),
+                        passed=False,
+                        issues=[Issue(claim="", problem="no facts retrieved")],
+                        sources=[],
+                    )
+                )
+                logger.info(
+                    "Section %d research finished in %.2fs (no facts)",
+                    section_num,
+                    research_elapsed,
+                )
+                continue
+
+            logger.info(
+                "Section %d research finished in %.2fs (%d facts)",
+                section_num,
+                research_elapsed,
+                len(research_result.facts),
+            )
+
+            # Use revise_until_approved to write and review the draft
+            logger.info(f"Section {section_num}: Starting write+review cycle...")
+            if no_review:
+                with metrics.stage("write"):
+                    draft = write_section(
+                        section_plan.title,
+                        research_result.facts,
+                    )
+                revise_result = {
+                    "draft": draft,
+                    "passed": False,
+                    "issues": [Issue(claim="", problem="review skipped (--no-review)")],
+                }
+            else:
+                revise_result = revise_until_approved(
+                    question=section_plan.title,
+                    facts=research_result.facts,
+                    max_rounds=max_rounds,
+                )
+
+            section_sources = (
+                revise_result["draft"].source_urls
+                if revise_result["draft"]
+                else []
+            )
+            section_result = SectionResult(
+                draft=revise_result["draft"] if revise_result["draft"] else SectionDraft(
+                    title=section_plan.title,
+                    content="Not enough verified information found.",
+                    source_urls=[],
+                ),
+                passed=revise_result["passed"],
+                issues=revise_result["issues"],
+                sources=section_sources,
+            )
+
+            for url in section_sources:
+                all_source_urls.add(url)
+
+            section_results.append(section_result)
+            logger.info(
+                "Section %d completed: passed=%s, issues=%d",
+                section_num,
+                revise_result["passed"],
+                len(revise_result["issues"]),
+            )
+        except Exception as exc:
+            logger.exception("Section %d failed: %s", section_num, exc)
             section_results.append(
                 SectionResult(
                     draft=SectionDraft(
                         title=section_plan.title,
-                        content="Not enough verified information found.",
+                        content="This question could not be completed.",
                         source_urls=[],
                     ),
                     passed=False,
-                    issues=[Issue(claim="", problem="no facts retrieved")],
+                    issues=[
+                        Issue(
+                            claim=section_plan.question,
+                            problem=f"Question processing failed: {exc}",
+                        )
+                    ],
                     sources=[],
                 )
             )
-            logger.info(
-                "Section %d research finished in %.2fs (no facts)",
-                section_num,
-                research_elapsed,
-            )
-            continue
-
-        logger.info(
-            "Section %d research finished in %.2fs (%d facts)",
-            section_num,
-            research_elapsed,
-            len(research_result.facts),
-        )
-
-        # Use revise_until_approved to write and review the draft
-        logger.info(f"Section {section_num}: Starting write+review cycle...")
-        revise_result = revise_until_approved(
-            question=section_plan.title,
-            facts=research_result.facts,
-            max_rounds=max_rounds,
-        )
-
-        # Collect source URLs from the draft
-        section_sources = revise_result["draft"].source_urls if revise_result["draft"] else []
-
-        # Build the SectionResult
-        section_result = SectionResult(
-            draft=revise_result["draft"] if revise_result["draft"] else SectionDraft(
-                title=section_plan.title,
-                content="Not enough verified information found.",
-                source_urls=[],
-            ),
-            passed=revise_result["passed"],
-            issues=revise_result["issues"],
-            sources=section_sources,
-        )
-
-        for url in section_sources:
-            all_source_urls.add(url)
-
-        section_results.append(section_result)
-        logger.info(f"Section {section_num} completed: passed={revise_result['passed']}, issues={len(revise_result['issues'])}")
 
     # === Step 3: Assemble the report ===
     deduplicated_sources = list(all_source_urls)
@@ -169,6 +226,13 @@ def run_pipeline(
         topic=topic,
         sections=section_results,
         sources=deduplicated_sources,
+    )
+    metrics.record_section_counts(
+        sections=len(section_results),
+        insufficient_evidence_sections=sum(
+            any(issue.problem == "no facts retrieved" for issue in result.issues)
+            for result in section_results
+        ),
     )
     return report
 

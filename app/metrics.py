@@ -29,6 +29,9 @@ class Metrics:
         )
         self._lock = threading.Lock()
         self._stages: dict[str, StageMetrics] = {}
+        self._review_failed_round1 = 0
+        self._sections = 0
+        self._insufficient_evidence_sections = 0
 
     def _stage_metrics(self, name: str | None = None) -> StageMetrics:
         stage_name = name or self._current_stage.get()
@@ -37,6 +40,24 @@ class Metrics:
     def reset(self) -> None:
         with self._lock:
             self._stages.clear()
+            self._review_failed_round1 = 0
+            self._sections = 0
+            self._insufficient_evidence_sections = 0
+
+    def record_first_round_review(self, *, passed: bool) -> None:
+        if not passed:
+            with self._lock:
+                self._review_failed_round1 += 1
+
+    def record_section_counts(
+        self,
+        *,
+        sections: int,
+        insufficient_evidence_sections: int,
+    ) -> None:
+        with self._lock:
+            self._sections = sections
+            self._insufficient_evidence_sections = insufficient_evidence_sections
 
     @contextmanager
     def stage(self, name: str) -> Iterator[None]:
@@ -78,6 +99,11 @@ class Metrics:
                 name: asdict(values)
                 for name, values in sorted(self._stages.items())
             }
+            evaluation = {
+                "sections": self._sections,
+                "failed_review_round1": self._review_failed_round1,
+                "insufficient_evidence_sections": self._insufficient_evidence_sections,
+            }
         input_tokens = sum(item["input_tokens"] for item in stages.values())
         output_tokens = sum(item["output_tokens"] for item in stages.values())
         estimated_cost = (
@@ -87,6 +113,7 @@ class Metrics:
         return {
             "uncached": not is_enabled(),
             "stages": stages,
+            "evaluation": evaluation,
             "input_price_per_mtok": INPUT_PRICE_PER_MTOK,
             "output_price_per_mtok": OUTPUT_PRICE_PER_MTOK,
             "estimated_cost": estimated_cost,

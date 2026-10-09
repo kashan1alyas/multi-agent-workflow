@@ -6,7 +6,8 @@ export default function TopicForm({ onSubmit, disabled }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSubmit(topic.trim(), Number(maxQuestions));
+    const questionCount = Math.min(20, Math.max(1, Number(maxQuestions) || 1));
+    onSubmit(topic.trim(), questionCount);
   };
 
   return (
@@ -22,15 +23,18 @@ export default function TopicForm({ onSubmit, disabled }) {
       </label>
 
       <label>
-        Max questions (1 to 5)
+        Max questions (1 to 20)
         <input
           type="number"
           min="1"
-          max="5"
+          max="20"
           value={maxQuestions}
           onChange={(e) => setMaxQuestions(e.target.value)}
         />
       </label>
+      {Number(maxQuestions) > 5 && (
+        <p>Large runs take longer and use more API quota.</p>
+      )}
 
       <button type="submit" disabled={disabled || !topic.trim()}>
         {disabled ? "Researching..." : "Start research"}

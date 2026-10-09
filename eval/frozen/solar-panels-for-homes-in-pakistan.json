@@ -1,0 +1,73 @@
+{
+  "topic": "Solar panels for homes in Pakistan",
+  "questions": [
+    "What is the current market size and projected growth rate for residential solar panels in Pakistan?",
+    "What are the government policies, subsidies, and net metering regulations for home solar systems in Pakistan?",
+    "What are the primary factors driving Pakistani homeowners to adopt solar energy, and what brands do they prefer?"
+  ],
+  "research": [
+    {
+      "question": "What is the current market size and projected growth rate for residential solar panels in Pakistan?",
+      "facts": [
+        {
+          "claim": "The Pakistan solar energy market size is expected to grow from 6.75 gigawatt in 2025 to 7.95 gigawatt in 2026 and is forecast to reach 18.05 gigawatt by 2031.",
+          "source_url": "https://www.mordorintelligence.com/industry-reports/pakistan-solar-energy-market"
+        },
+        {
+          "claim": "The projected growth rate for the Pakistan solar energy market is a compound annual growth rate (CAGR) of 17.82% over the period from 2026 to 2031.",
+          "source_url": "https://www.mordorintelligence.com/industry-reports/pakistan-solar-energy-market"
+        },
+        {
+          "claim": "Pakistan imported 16.9 GW of photovoltaic (PV) modules in 2024, representing a 127% year-on-year surge.",
+          "source_url": "https://www.mordorintelligence.com/industry-reports/pakistan-solar-energy-market"
+        },
+        {
+          "claim": "By grid type, on-grid systems held 91.80% of the Pakistan solar energy market size in 2025.",
+          "source_url": "https://www.mordorintelligence.com/industry-reports/pakistan-solar-energy-market"
+        },
+        {
+          "claim": "As of August 2025, Pakistan has imported approximately 50 GW of solar panels.",
+          "source_url": "https://www.transitionzero.org/shedding-light-on-pakistans-distributed-solar-revolution"
+        }
+      ]
+    },
+    {
+      "question": "What are the government policies, subsidies, and net metering regulations for home solar systems in Pakistan?",
+      "facts": [
+        {
+          "claim": "Pakistan's National Electric Power Regulatory Authority (NEPRA) introduced Prosumer Regulations (SRO 251(I)/2026), shifting distributed solar generation from net metering to net billing.",
+          "source_url": "https://www.sciencedirect.com/science/article/pii/S2949821X26003613"
+        },
+        {
+          "claim": "Pakistan's Economic Coordination Committee proposed amending net metering regulations by reducing the buyback rate from PKR 27 per kilowatt-hour (kWh) down to PKR 10/kWh.",
+          "source_url": "https://ieefa.org/resources/net-metering-reforms-and-grid-challenges-amid-pakistans-solar-rise"
+        },
+        {
+          "claim": "Proposed net metering amendments in Pakistan include eliminating the 1.5 times sanctioned load allowance and transitioning from net metering to net billing.",
+          "source_url": "https://ieefa.org/resources/net-metering-reforms-and-grid-challenges-amid-pakistans-solar-rise"
+        },
+        {
+          "claim": "Despite lower proposed buyback rates, payback periods for an average 10 kilowatt (kW) solar installation in Pakistan remain within the globally accepted 5-year range.",
+          "source_url": "https://ieefa.org/resources/net-metering-reforms-and-grid-challenges-amid-pakistans-solar-rise"
+        }
+      ]
+    },
+    {
+      "question": "What are the primary factors driving Pakistani homeowners to adopt solar energy, and what brands do they prefer?",
+      "facts": [
+        {
+          "claim": "Pakistan's solar energy market is driven by factors such as plunging module prices, a cumulative 155% run-up in retail electricity tariffs since 2021, and widening access to concessional vendor financing.",
+          "source_url": "https://www.mordorintelligence.com/industry-reports/pakistan-solar-energy-market"
+        },
+        {
+          "claim": "Pakistan imported 16.9 GW of photovoltaic modules in 2024, representing a 127% year-on-year surge that made the country the world's third-largest destination for Chinese solar exports.",
+          "source_url": "https://www.mordorintelligence.com/industry-reports/pakistan-solar-energy-market"
+        },
+        {
+          "claim": "Provincial free-solar-kit schemes targeting 500,000 households are actively reshaping demand patterns across Pakistan.",
+          "source_url": "https://www.mordorintelligence.com/industry-reports/pakistan-solar-energy-market"
+        }
+      ]
+    }
+  ]
+}

@@ -31,7 +31,7 @@ def health() -> dict[str, str]:
 
 class JobRequest(BaseModel):
     topic: str
-    max_questions: int = Field(default=2, ge=1)
+    max_questions: int = Field(default=2, ge=1, le=20)
 
 
 def _run_job(job_id: str, topic: str, max_questions: int) -> None:

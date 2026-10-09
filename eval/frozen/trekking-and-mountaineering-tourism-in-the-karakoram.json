@@ -1,0 +1,73 @@
+{
+  "topic": "Trekking and mountaineering tourism in the Karakoram",
+  "questions": [
+    "What is the current market size and economic value of trekking and mountaineering tourism in the Karakoram region?",
+    "What are the emerging travel trends and popular routes for adventure tourists in the Karakoram?",
+    "Who are the major tour operators and competing destinations offering Karakoram mountaineering expeditions?"
+  ],
+  "research": [
+    {
+      "question": "What is the current market size and economic value of trekking and mountaineering tourism in the Karakoram region?",
+      "facts": [
+        {
+          "claim": "Tourism significantly impacts Hunza's economy, with 10% of households earning substantial income from the sector.",
+          "source_url": "https://www.academia.edu/108261107/Tourism_in_the_Hindu_Kush_Karakoram_A_case_study_on_the_Valley_of_Hunza_Northern_Areas_of_Pakistan_"
+        },
+        {
+          "claim": "The global alpine mountaineering tourism market was valued at approximately USD 8.4 billion in 2024 and is projected to reach USD 14.7 billion by 2032.",
+          "source_url": "https://www.marketresearchreports.com/reports/global-alpine-mountaineering-tourism-market-strategic-research-report"
+        },
+        {
+          "claim": "Pakistan's Karakoram Mountains boast 18 peaks over 7,500m, and four over 8,000m, including K2.",
+          "source_url": "https://www.responsiblevacation.com/vacations/pakistan/travel-guide/karakoram-mountains"
+        }
+      ]
+    },
+    {
+      "question": "What are the emerging travel trends and popular routes for adventure tourists in the Karakoram?",
+      "facts": [
+        {
+          "claim": "The Karakoram Highway reaches heights of 4,714 m (15,466 ft) at the Khunjerab Pass, where the road crosses into China.",
+          "source_url": "https://www.gadventures.com/blog/karakoram-highway"
+        },
+        {
+          "claim": "The Karakoram Highway stretches across Pakistan for 1,300km (810 mi), providing access to destinations such as Nanga Parbat, Passu Glacier, Khunjerab National Park, and Shigar Valley.",
+          "source_url": "https://www.gadventures.com/blog/karakoram-highway"
+        },
+        {
+          "claim": "Most people begin their Karakoram Highway adventure in Pakistan from the capital of Islamabad, while the KKH officially starts one hour away in the town of Hasan Abdal in the Punjab province.",
+          "source_url": "https://www.gadventures.com/blog/karakoram-highway"
+        },
+        {
+          "claim": "Pakistan's Karakoram Mountains feature 18 peaks over 7,500m and four over 8,000m, including K2.",
+          "source_url": "https://www.responsiblevacation.com/vacations/pakistan/travel-guide/karakoram-mountains"
+        },
+        {
+          "claim": "The cirque of Concordia, where the Baltoro and Godwin-Austen glaciers converge, is a prominent trekking location known as the throne room of the mountain gods.",
+          "source_url": "https://www.responsiblevacation.com/vacations/pakistan/travel-guide/karakoram-mountains"
+        }
+      ]
+    },
+    {
+      "question": "Who are the major tour operators and competing destinations offering Karakoram mountaineering expeditions?",
+      "facts": [
+        {
+          "claim": "ClimberCA operates as an international mountaineering consortium offering expeditions across Asia, including the Karakoram and Pakistan.",
+          "source_url": "https://climberca.com"
+        },
+        {
+          "claim": "Trango Adventure offers guided tours, treks, and mountaineering expeditions such as the Gasherbrum II expedition in the Karakoram range of Pakistan.",
+          "source_url": "https://trangoadventure.com/tours/gasherbrum-ii-expedition"
+        },
+        {
+          "claim": "Karakoram Treks provides resources, guides, and information for mountaineering expeditions like the Laila Peak expedition in Pakistan.",
+          "source_url": "https://karakoramtreks.com/blog/the-ultimate-guide-to-laila-peak-expedition"
+        },
+        {
+          "claim": "Himalaya Alpine Guides offers mountaineering and expedition climbs in competing destinations such as the Himalayas in Nepal, India, and Tibet, as well as the Karakoram in Pakistan.",
+          "source_url": "https://www.himalaya-alpine.com/expedition-climbs"
+        }
+      ]
+    }
+  ]
+}

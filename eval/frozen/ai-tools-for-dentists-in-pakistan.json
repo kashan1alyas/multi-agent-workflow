@@ -1,0 +1,31 @@
+{
+  "topic": "AI tools for dentists in Pakistan",
+  "questions": [
+    "What is the current adoption rate and market size of AI tools among dental clinics in Pakistan?",
+    "Which software providers and dental AI technologies are currently available in the Pakistani market?",
+    "What are the regulatory requirements and approvals needed from the Pakistan Medical and Dental Council (PMDC) for using AI in dentistry?"
+  ],
+  "research": [
+    {
+      "question": "What is the current adoption rate and market size of AI tools among dental clinics in Pakistan?",
+      "facts": []
+    },
+    {
+      "question": "Which software providers and dental AI technologies are currently available in the Pakistani market?",
+      "facts": []
+    },
+    {
+      "question": "What are the regulatory requirements and approvals needed from the Pakistan Medical and Dental Council (PMDC) for using AI in dentistry?",
+      "facts": [
+        {
+          "claim": "Under the PMDC Act, 2022, medical professionals in Pakistan are required to act in accordance with the regulations established by the Pakistan Medical and Dental Council (PMDC).",
+          "source_url": "https://qrjsocial.com/index.php/38/article/download/1133/975/2202"
+        },
+        {
+          "claim": "Any doctor practicing via a digital platform must be registered with the Pakistan Medical & Dental Council (PMDC) as mandated by the PMDC Act 2022.",
+          "source_url": "https://courtingthelaw.com/2025/06/24/commentary/guest-columnists/regulating-the-remedy-pakistans-legal-prescription-for-digital-health"
+        }
+      ]
+    }
+  ]
+}
