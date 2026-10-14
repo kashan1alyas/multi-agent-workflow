@@ -1,6 +1,9 @@
 import { useState } from "react";
+import { buildMarkdown } from "../api";
 
 const TEXT_KEYS = ["text", "content", "body", "draft", "summary", "answer"];
+const EMPTY_CONTENT = "Not enough verified information found.";
+const EMPTY_ISSUE = "No usable sources were found for this question.";
 
 // Turn any value into readable text without crashing.
 function textOf(value) {
@@ -74,39 +77,29 @@ function normalize(s, i) {
     ? section.review
     : {};
 
+  const draft = textOf(section.draft ?? section.text ?? section.content);
+  const sources = toArray(section.sources ?? section.source_urls)
+    .map(urlOf)
+    .filter(Boolean);
+  const issues = toArray(section.issues ?? review.issues);
+  const empty = draft.trim() === EMPTY_CONTENT
+    || sources.length === 0
+    || issues.some((issue) => issue?.problem === "no facts retrieved");
+
   return {
-    question: textOf(section.question || section.title) || `Section ${i + 1}`,
-    draft: textOf(section.draft ?? section.text ?? section.content),
+    question: textOf(section.question || section.title || section.draft?.title)
+      || `Section ${i + 1}`,
+    draft,
     verified: pickVerified(section),
-    sources: toArray(section.sources ?? section.source_urls)
-      .map(urlOf)
-      .filter(Boolean),
-    issues: toArray(section.issues ?? review.issues),
+    sources,
+    issues,
+    empty,
   };
-}
-
-function toMarkdown(sections) {
-  return sections
-    .map((s) => {
-      let md = `## ${s.question}\n\n*${s.verified ? "Verified" : "Unverified"}*\n\n${s.draft}\n`;
-
-      if (!s.verified && s.issues.length > 0) {
-        const lines = s.issues.map((x) => `- ${issueText(x)}`).join("\n");
-        md += `\n**Reviewer issues**\n\n${lines}\n`;
-      }
-
-      if (s.sources.length > 0) {
-        const lines = s.sources.map((u, n) => `${n + 1}. ${u}`).join("\n");
-        md += `\n**Sources**\n\n${lines}\n`;
-      }
-
-      return md;
-    })
-    .join("\n");
 }
 
 export default function ReportView({ result }) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
 
   const raw = Array.isArray(result) ? result : toArray(result?.sections);
   const sections = raw.map(normalize);
@@ -117,32 +110,61 @@ export default function ReportView({ result }) {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(toMarkdown(sections));
+      setCopyError("");
+      const { markdown } = await buildMarkdown(result);
+      await navigator.clipboard.writeText(markdown);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } catch (error) {
       setCopied(false);
+      setCopyError(`Could not copy report: ${error.message}`);
     }
   };
 
+  const handlePdf = () => {
+    const oldTitle = document.title;
+    document.title = "Market-Research-Report";
+    window.print();
+    document.title = oldTitle;
+  };
+
+  const hasUsableSections = sections.some((section) => !section.empty);
+
   return (
     <div>
-      <button type="button" onClick={handleCopy}>
-        {copied ? "Copied!" : "Copy report as Markdown"}
-      </button>
+      <div className="actions">
+        <button type="button" onClick={handleCopy} disabled={!hasUsableSections}>
+          {copied
+            ? "Copied!"
+            : hasUsableSections
+              ? "Copy report as Markdown"
+              : "No usable sections to copy"}
+        </button>
+        <button type="button" className="secondary" onClick={handlePdf}>
+          Download as PDF
+        </button>
+      </div>
+      {copyError && <p role="alert">{copyError}</p>}
 
       {sections.map((s, i) => (
         <div className="card" key={i}>
-          <h2>{s.question}</h2>
-          <span className={s.verified ? "badge ok" : "badge warn"}>
-            {s.verified ? "Verified" : "Unverified"}
+          <h2>Section {i + 1}: {s.question}</h2>
+          <span className={`badge ${s.empty ? "muted" : s.verified ? "ok" : "warn"}`}>
+            {s.empty ? "No evidence found" : s.verified ? "Verified" : "Unverified"}
           </span>
 
           {s.draft.split("\n\n").map((p, j) => (
             <p key={j}>{p}</p>
           ))}
 
-          {!s.verified && s.issues.length > 0 && (
+          {s.empty && (
+            <div>
+              <h3>Issue</h3>
+              <p>{EMPTY_ISSUE}</p>
+            </div>
+          )}
+
+          {!s.empty && !s.verified && s.issues.length > 0 && (
             <div>
               <h3>Reviewer issues</h3>
               <ul>

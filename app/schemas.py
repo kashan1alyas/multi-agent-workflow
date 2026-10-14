@@ -49,6 +49,10 @@ class SectionResult(BaseModel):
     passed: bool = Field(description="True if the draft was approved after review.")
     issues: List[Issue] = Field(description="List of issues found (empty if passed=True).")
     sources: List[str] = Field(description="Source URLs used for this section.")
+    original_index: int = Field(
+        default=0,
+        description="Original plan position, retained for debugging after report sorting.",
+    )
 
 
 class Report(BaseModel):

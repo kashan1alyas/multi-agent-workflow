@@ -103,6 +103,12 @@ button.secondary:hover {
   background: #3d424d;
 }
 
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .error {
   background: #7f1d1d;
   color: #fff;
@@ -126,6 +132,10 @@ button.secondary:hover {
 
 .badge.warn {
   background: #b45309;
+}
+
+.badge.muted {
+  background: #6b7280;
 }
 
 .status-line {
@@ -160,5 +170,68 @@ button.secondary:hover {
 
   button {
     width: 100%;
+  }
+}
+
+@media print {
+  html,
+  body,
+  #root,
+  .container {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-width: 100% !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  form.card,
+  button,
+  .error,
+  .spinner,
+  .status-line,
+  .actions {
+    display: none !important;
+  }
+
+  .card {
+    display: block !important;
+    position: static !important;
+    float: none !important;
+    overflow: visible !important;
+    background: #fff !important;
+    border: 1px solid #bbb !important;
+    margin: 12px 0 !important;
+    padding: 12px !important;
+    break-inside: auto;
+  }
+
+  .card h2,
+  .card h3 {
+    break-after: avoid;
+  }
+
+  h1,
+  h2,
+  h3,
+  p,
+  li {
+    color: #000 !important;
+    text-shadow: none !important;
+  }
+
+  a {
+    color: #0645ad !important;
+    overflow-wrap: anywhere;
+  }
+
+  .badge {
+    background: #fff !important;
+    color: #000 !important;
+    border: 1px solid #555 !important;
   }
 }

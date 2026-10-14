@@ -41,3 +41,11 @@ export function startJob(topic, maxQuestions) {
 export function getJob(jobId) {
   return request(`/api/jobs/${jobId}`);
 }
+
+export function buildMarkdown(report) {
+  return request("/api/reports/markdown", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(report),
+  });
+}

@@ -6,6 +6,7 @@ from typing import List, Optional
 from pydantic import ValidationError
 
 from app.schemas import Plan, SectionDraft, Report, Fact, SectionResult, Issue
+from app.report import EMPTY_ISSUE, section_group, sort_sections
 from app.agents.planner import plan
 from app.agents.researcher import research
 from app.agents.writer import write_section
@@ -135,6 +136,7 @@ def run_pipeline(
                         passed=False,
                         issues=[Issue(claim="", problem="no facts retrieved")],
                         sources=[],
+                        original_index=section_num,
                     )
                 )
                 logger.info(
@@ -185,6 +187,7 @@ def run_pipeline(
                 passed=revise_result["passed"],
                 issues=revise_result["issues"],
                 sources=section_sources,
+                original_index=section_num,
             )
 
             for url in section_sources:
@@ -214,6 +217,7 @@ def run_pipeline(
                         )
                     ],
                     sources=[],
+                    original_index=section_num,
                 )
             )
 
@@ -224,14 +228,14 @@ def run_pipeline(
 
     report = Report(
         topic=topic,
-        sections=section_results,
+        sections=sort_sections(section_results),
         sources=deduplicated_sources,
     )
     metrics.record_section_counts(
         sections=len(section_results),
         insufficient_evidence_sections=sum(
-            any(issue.problem == "no facts retrieved" for issue in result.issues)
-            for result in section_results
+            section_group(result) == 2
+            for result in report.sections
         ),
     )
     return report
@@ -243,31 +247,32 @@ def print_report(report: Report) -> None:
     passed_count = 0
     failed_count = 0
     insufficient_count = 0
-    for i, section in enumerate(report.sections, 1):
-        insufficient_evidence = any(
-            issue.problem == "no facts retrieved" for issue in section.issues
-        )
+    sections = sort_sections(report.sections)
+    for i, section in enumerate(sections, 1):
+        group = section_group(section)
         status = (
             "PASS"
-            if section.passed
-            else "INSUFFICIENT EVIDENCE"
-            if insufficient_evidence
+            if group == 0
             else "FAIL"
+            if group == 1
+            else "NO EVIDENCE"
         )
-        if insufficient_evidence:
+        if group == 2:
             insufficient_count += 1
-        elif section.passed:
+        elif group == 0:
             passed_count += 1
         else:
             failed_count += 1
         print(f"  {i}. {section.draft.title} [{status}]")
         print(f"     Content: {section.draft.content[:200]}{'...' if len(section.draft.content) > 200 else ''}")
         print(f"     Sources: {section.sources}")
-        if section.issues:
+        if group == 2:
+            print(f"     Issue: {EMPTY_ISSUE}")
+        elif section.issues:
             print(f"     Issues: {len(section.issues)} issue(s)")
             for issue in section.issues:
                 print(f"       - '{issue.claim}': {issue.problem}")
-    print(f"\n  Total sections: {len(report.sections)}")
+    print(f"\n  Total sections: {len(sections)}")
     print(
         f"  Passed: {passed_count}, Failed reviews: {failed_count}, "
         f"Insufficient evidence: {insufficient_count}"

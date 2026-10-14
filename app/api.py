@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.pipeline import run_pipeline
+from app.report import build_markdown
+from app.schemas import Report
 
 app = FastAPI(title="Market Research Agents API")
 app.add_middleware(
@@ -94,3 +96,8 @@ def get_job(job_id: str) -> dict[str, Any]:
             "result": job["result"],
             "error": job["error"],
         }
+
+
+@app.post("/api/reports/markdown")
+def report_markdown(report: Report) -> dict[str, str]:
+    return {"markdown": build_markdown(report, include_empty=False)}

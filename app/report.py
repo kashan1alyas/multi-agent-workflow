@@ -1,9 +1,13 @@
 import logging
 import os
+from collections.abc import Sequence
 
-from app.schemas import Report
+from app.schemas import Report, SectionResult
 
 logger = logging.getLogger(__name__)
+
+EMPTY_CONTENT = "Not enough verified information found."
+EMPTY_ISSUE = "No usable sources were found for this question."
 
 
 def _slugify(topic: str) -> str:
@@ -15,13 +19,33 @@ def _slugify(topic: str) -> str:
     return "-".join(slug.split())
 
 
-def save_report(report: Report, output_dir: str = "reports") -> str:
-    """Write a pipeline Report as Markdown and return its path."""
-    os.makedirs(output_dir, exist_ok=True)
+def section_group(section: SectionResult) -> int:
+    """Return the report-ordering group for a section."""
+    is_empty = (
+        section.draft.content.strip() == EMPTY_CONTENT
+        or not section.sources
+        or any(issue.problem == "no facts retrieved" for issue in section.issues)
+    )
+    if is_empty:
+        return 2
+    return 0 if section.passed else 1
+
+
+def sort_sections(sections: Sequence[SectionResult]) -> list[SectionResult]:
+    """Sort sections by review/evidence group, preserving order within each group."""
+    return sorted(sections, key=section_group)
+
+
+def build_markdown(report: Report, include_empty: bool) -> str:
+    """Build Markdown for a report, optionally omitting sections with no evidence."""
+    sections = sort_sections(report.sections)
+    if not include_empty:
+        sections = [section for section in sections if section_group(section) != 2]
+    if not sections:
+        return ""
 
     source_urls = list(dict.fromkeys(
-        report.sources
-        + [url for section in report.sections for url in section.sources]
+        url for section in sections for url in section.sources
     ))
     source_numbers = {url: index for index, url in enumerate(source_urls, 1)}
     lines = [
@@ -31,22 +55,20 @@ def save_report(report: Report, output_dir: str = "reports") -> str:
         "",
     ]
 
-    for section in report.sections:
-        lines.extend([f"## {section.draft.title}", ""])
-        if not section.passed:
-            insufficient_evidence = any(
-                issue.problem == "no facts retrieved" for issue in section.issues
-            )
+    for index, section in enumerate(sections, 1):
+        group = section_group(section)
+        lines.extend([f"## Section {index}: {section.draft.title}", ""])
+        if group == 2:
+            lines.extend([f"> **{EMPTY_ISSUE}**", ""])
+        elif group == 1:
             notes = "; ".join(
                 f"{issue.claim}: {issue.problem}".strip(": ")
                 for issue in section.issues
             ) or "No review notes recorded."
-            status = (
-                "Insufficient evidence"
-                if insufficient_evidence
-                else "Unverified"
-            )
-            lines.extend([f"> **Status: {status}.** Review notes: {notes}", ""])
+            lines.extend([f"> **Unverified.** Review notes: {notes}", ""])
+        else:
+            lines.extend(["*Verified*", ""])
+
         citations = " ".join(
             f"[{source_numbers[url]}]"
             for url in dict.fromkeys(section.sources)
@@ -65,10 +87,17 @@ def save_report(report: Report, output_dir: str = "reports") -> str:
     else:
         lines.append("No sources.")
 
+    return "\n".join(lines) + "\n"
+
+
+def save_report(report: Report, output_dir: str = "reports") -> str:
+    """Write a pipeline Report as Markdown and return its path."""
+    os.makedirs(output_dir, exist_ok=True)
+    markdown = build_markdown(report, include_empty=True)
     filepath = os.path.join(output_dir, f"{_slugify(report.topic)}.md")
 
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write(markdown)
 
     logger.info("Generated Markdown report: %s", filepath)
     return filepath
@@ -79,16 +108,13 @@ generate_report = save_report
 
 def print_report_summary(report: Report) -> None:
     """Print a quick summary of the report to console."""
-    passed = sum(1 for s in report.sections if s.passed)
-    insufficient = sum(
-        1
-        for section in report.sections
-        if any(issue.problem == "no facts retrieved" for issue in section.issues)
-    )
-    failed = len(report.sections) - passed - insufficient
+    sections = sort_sections(report.sections)
+    passed = sum(1 for section in sections if section_group(section) == 0)
+    failed = sum(1 for section in sections if section_group(section) == 1)
+    insufficient = sum(1 for section in sections if section_group(section) == 2)
     print(f"\nReport: {report.topic}")
     print(
-        f"  Sections: {len(report.sections)} (passed: {passed}, "
+        f"  Sections: {len(sections)} (passed: {passed}, "
         f"failed reviews: {failed}, insufficient evidence: {insufficient})"
     )
     print(f"  Sources: {len(report.sources)}")
