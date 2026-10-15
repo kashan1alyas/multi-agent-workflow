@@ -35,8 +35,12 @@ def write_section(
         "You are a market research writer. Write 1 to 3 short paragraphs for a "
         "market research report using ONLY the provided numbered facts. Do not "
         "use outside knowledge, numbers that are not in the facts, or "
-        "superlatives unless a fact says so. If the facts are thin, say so in "
-        "the text. List the source URLs used."
+        "superlatives unless a fact says so. Keep each section to one scope: "
+        "do not mix local and global numbers unless the sentence says which is which. "
+        "Put inline citation markers [n] after each sentence, where n is the index "
+        "of that source in the section's source list. Never merge claims from "
+        "different sources into one sentence. If the facts are thin, say so in "
+        "the text. List the source URLs used at the end."
     )
     user_prompt = f"SECTION: {question}\n\nNUMBERED FACTS:\n{facts_summary}"
     if feedback:

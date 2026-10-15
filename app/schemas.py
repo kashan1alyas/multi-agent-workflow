@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Literal
 
 
 class Fact(BaseModel):
@@ -43,6 +43,13 @@ class Review(BaseModel):
     issues: List[Issue] = Field(description="List of issues found in the draft.")
 
 
+class SentenceCheck(BaseModel):
+    sentence: str
+    source_url: str
+    verdict: Literal["supported", "partly_supported", "unsupported", "unverifiable"]
+    evidence: str = ""
+
+
 class SectionResult(BaseModel):
     """Result for a single pipeline section."""
     draft: SectionDraft = Field(description="The drafted section content.")
@@ -53,6 +60,8 @@ class SectionResult(BaseModel):
         default=0,
         description="Original plan position, retained for debugging after report sorting.",
     )
+    sentence_checks: List[SentenceCheck] = Field(default_factory=list)
+    source_check_summary: str = ""
 
 
 class Report(BaseModel):
@@ -60,3 +69,6 @@ class Report(BaseModel):
     topic: str = Field(description="The research topic.")
     sections: List[SectionResult] = Field(description="Per-section results with draft, pass/fail, and sources.")
     sources: List[str] = Field(description="Deduplicated list of all source URLs used across all sections.")
+    editor_summary: str = ""
+    editor_notes: List[str] = Field(default_factory=list)
+    editor_removed_sentences: List[str] = Field(default_factory=list)

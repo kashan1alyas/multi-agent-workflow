@@ -7,3 +7,5 @@ ollama
 pytest>=7.0.0
 fastapi
 uvicorn
+requests
+beautifulsoup4

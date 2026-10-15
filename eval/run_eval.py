@@ -1,367 +1,404 @@
+"""Run the four evaluation conditions and create blind sentence-scoring files."""
+
+import argparse
 import csv
 import json
 import random
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-
+from typing import Callable, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
-EVAL_DIR = ROOT / "eval"
-PLANS_DIR = EVAL_DIR / "plans"
-REPORTS_DIR = ROOT / "reports" / "eval"
+EVAL_DIR = Path(__file__).resolve().parent
 TOPICS_FILE = EVAL_DIR / "topics.txt"
-PROGRESS_FILE = EVAL_DIR / "progress.json"
-CONDITIONS = (("noreview", True), ("review", False))
-DAILY_QUOTA_MESSAGES = ("PerDay", "Daily free quota exhausted")
-MAX_SECTIONS = 3
-MAX_REVISION_ROUNDS = 2
+CONDITIONS: dict[str, tuple[str, ...]] = {
+    "single": ("--single-agent",),
+    "basic": (
+        "--pipeline",
+        "--no-review",
+        "--no-supervisor",
+        "--no-verifier",
+        "--no-editor",
+    ),
+    "review-supervisor": ("--pipeline", "--no-verifier", "--no-editor"),
+    "full": ("--pipeline",),
+}
+EXPECTED_CALLS_PER_TOPIC = {
+    "single": 4,
+    "basic": 7,
+    "review-supervisor": 13,
+    "full": 17,
+}
+LEVEL_TWO_HEADING = re.compile(r"^## (.+)$", re.MULTILINE)
+SECTION_HEADING = re.compile(r"^Section \d+:\s*(.*)$")
+SOURCE_ENTRY = re.compile(r"^(\d+)\.\s+(https?://\S+)", re.MULTILINE)
+SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+CITATION = re.compile(r"\[(\d+)\]")
+SOURCE_CHECK = re.compile(
+    r"Source check:\*\*\s*(\d+)\s+of\s+(\d+)\s+sentences confirmed against sources"
+)
 
 
-def slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug or "topic"
+def slugify(topic: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-") or "topic"
 
 
-def load_topics() -> list[str]:
-    return [
-        line.strip()
-        for line in TOPICS_FILE.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+def load_topics(path: Path = TOPICS_FILE, limit: int | None = None) -> list[str]:
+    topics = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return topics[:limit] if limit is not None else topics
 
 
-def report_path(topic: str, condition: str) -> Path:
-    return REPORTS_DIR / f"{slugify(topic)}-{condition}.md"
+def report_path(topic: str, condition: str, eval_dir: Path = EVAL_DIR) -> Path:
+    return eval_dir / "reports" / f"{slugify(topic)}-{condition}.md"
 
 
-def metrics_path(topic: str, condition: str) -> Path:
-    return REPORTS_DIR / f"{slugify(topic)}-{condition}.json"
+def metric_path(topic: str, condition: str, eval_dir: Path = EVAL_DIR) -> Path:
+    return eval_dir / "metrics" / f"{slugify(topic)}-metrics-{condition}.json"
 
 
-def expected_llm_calls(topics: list[str]) -> int:
-    total = 0
+def expected_llm_calls(topics: Sequence[str], eval_dir: Path = EVAL_DIR) -> int:
+    pending_estimates = 0
     for topic in topics:
-        plan_file = PLANS_DIR / f"{slugify(topic)}.json"
-        pending = [
-            (condition, report_path(topic, condition).exists())
-            for condition, _ in CONDITIONS
-        ]
-        if all(exists for _, exists in pending):
-            continue
-        if not plan_file.exists():
-            total += 1
-        for condition, exists in pending:
-            if exists:
-                continue
-            if condition == "noreview":
-                total += MAX_SECTIONS * 2
-            else:
-                total += MAX_SECTIONS * (1 + 2 * MAX_REVISION_ROUNDS)
-    return total
+        for condition, estimate in EXPECTED_CALLS_PER_TOPIC.items():
+            if not report_path(topic, condition, eval_dir).exists():
+                pending_estimates += estimate
+    return pending_estimates
 
 
-def run_condition(topic: str, condition: str, no_review: bool) -> subprocess.CompletedProcess:
+def build_command(topic: str, condition: str, eval_dir: Path = EVAL_DIR) -> list[str]:
     command = [
         sys.executable,
-        "main.py",
-        "--pipeline",
+        str(ROOT / "main.py"),
+        topic,
         "--max-sections",
-        str(MAX_SECTIONS),
-        "--plan-file",
-        str(Path("eval") / "plans" / f"{slugify(topic)}.json"),
+        "3",
         "--output-suffix",
         condition,
     ]
-    if no_review:
-        command.append("--no-review")
-    command.append(topic)
-    return subprocess.run(
-        command,
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    if condition != "single":
+        plan_file = eval_dir / "plans" / f"{slugify(topic)}.json"
+        try:
+            plan_argument = str(plan_file.relative_to(ROOT))
+        except ValueError:
+            plan_argument = str(plan_file)
+        command.extend(
+            [
+                "--plan-file",
+                plan_argument,
+            ]
+        )
+    command.extend(CONDITIONS[condition])
+    return command
 
 
-def relocate_outputs(topic: str, condition: str) -> None:
+def _relocate_outputs(topic: str, condition: str, eval_dir: Path) -> None:
     slug = slugify(topic)
-    report_source = ROOT / "reports" / f"{slug}-{condition}.md"
-    metrics_source = ROOT / "reports" / f"{slug}-metrics-{condition}.json"
-    report_target = report_path(topic, condition)
-    metrics_target = metrics_path(topic, condition)
-
-    if report_source.exists():
-        report_source.replace(report_target)
-    if metrics_source.exists():
-        metrics_source.replace(metrics_target)
-
-
-def is_daily_quota_error(output: str) -> bool:
-    return any(message.lower() in output.lower() for message in DAILY_QUOTA_MESSAGES)
-
-
-def read_metrics(topic: str, condition: str) -> dict:
-    path = metrics_path(topic, condition)
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"Could not read metrics file {path}: {exc}")
-        return {}
+    reports_dir = eval_dir / "reports"
+    metrics_dir = eval_dir / "metrics"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    for source, target in (
+        (
+            ROOT / "reports" / f"{slug}-{condition}.md",
+            report_path(topic, condition, eval_dir),
+        ),
+        (
+            ROOT / "reports" / f"{slug}-metrics-{condition}.json",
+            metric_path(topic, condition, eval_dir),
+        ),
+    ):
+        if source.exists():
+            shutil.move(str(source), str(target))
 
 
-def stage_data(metrics: dict, stage: str) -> dict:
-    stages = metrics.get("stages", {})
-    if not isinstance(stages, dict):
-        return {}
-    data = stages.get(stage, {})
-    return data if isinstance(data, dict) else {}
+def _report_sections(markdown: str) -> list[tuple[str, str]]:
+    headings = list(LEVEL_TWO_HEADING.finditer(markdown))
+    sections = []
+    for index, heading in enumerate(headings):
+        section_match = SECTION_HEADING.match(heading.group(1))
+        if not section_match:
+            continue
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+        sections.append(
+            (section_match.group(1).strip(), markdown[heading.end():end])
+        )
+    return sections
 
 
-def metric_number(metrics: dict, *keys: str) -> float:
-    value = metrics
-    for key in keys:
-        if not isinstance(value, dict):
-            return 0
-        value = value.get(key, 0)
-    return value if isinstance(value, (int, float)) else 0
+def _content_lines(block: str) -> list[str]:
+    return [
+        line.strip()
+        for line in block.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith((">", "#", "*"))
+    ]
 
 
-def write_results(topics: list[str]) -> None:
+def _section_content(block: str) -> str:
+    content = " ".join(_content_lines(block))
+    content = re.sub(r"\[(?:Partly supported by source|Could not check against source)\]", "", content)
+    return re.sub(r"\s+", " ", CITATION.sub("", content)).strip()
+
+
+def _report_stats(markdown: str) -> tuple[int, int, int]:
+    content_count = 0
+    empty_count = 0
+    verifier_removed = 0
+    for _, block in _report_sections(markdown):
+        content = _section_content(block)
+        if not content or "No evidence found" in block or content == "Not enough verified information found.":
+            empty_count += 1
+        else:
+            content_count += 1
+
+        checked = SOURCE_CHECK.search(block)
+        if checked:
+            original_sentence_count = int(checked.group(2))
+            kept_sentence_count = sum(
+                bool(sentence.strip())
+                for sentence in SENTENCE_SPLIT.split(content)
+            )
+            verifier_removed += max(0, original_sentence_count - kept_sentence_count)
+    return content_count, empty_count, verifier_removed
+
+
+def write_results(topics: Sequence[str], eval_dir: Path = EVAL_DIR) -> None:
+    headers = [
+        "Topic",
+        "Condition",
+        "LLM calls",
+        "Tokens",
+        "Seconds",
+        "Sections with content",
+        "Sections empty",
+        "Sections failed in review round 1",
+        "Sentences removed by Verifier",
+    ]
     lines = [
-        "# Evaluation Results",
+        "# Evaluation results",
         "",
-        "| Topic | Condition | LLM calls | Tokens | Seconds | Sections | Revision rounds | Failed review in round 1 | Insufficient evidence |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "Verifier removals are estimated as checked sentences minus final retained sentences.",
+        "",
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] + ["---:"] * (len(headers) - 1)) + " |",
     ]
     for topic in topics:
-        for condition, _ in CONDITIONS:
-            metrics = read_metrics(topic, condition)
-            llm_calls = tokens = seconds = 0
-            review_calls = 0
-            for stage in ("plan", "research", "write", "review"):
-                stage_metrics = stage_data(metrics, stage)
-                llm_calls += metric_number(stage_metrics, "llm_real_calls")
-                llm_calls += metric_number(stage_metrics, "llm_cache_hits")
-                tokens += metric_number(stage_metrics, "input_tokens")
-                tokens += metric_number(stage_metrics, "output_tokens")
-                seconds += metric_number(stage_metrics, "seconds")
-                if stage == "review":
-                    review_calls = int(
-                        metric_number(stage_metrics, "llm_real_calls")
-                        + metric_number(stage_metrics, "llm_cache_hits")
-                    )
-            evaluation = metrics.get("evaluation", {})
-            if not isinstance(evaluation, dict):
-                evaluation = {}
-            sections = evaluation.get("sections", 0)
-            failed_first = evaluation.get("failed_review_round1", 0)
-            insufficient = evaluation.get("insufficient_evidence_sections", 0)
-            revision_rounds = review_calls if condition == "review" else 0
-            lines.append(
-                f"| {topic} | {condition} | {int(llm_calls)} | {int(tokens)} | "
-                f"{seconds:.2f} | {sections} | {revision_rounds} | "
-                f"{failed_first} | {insufficient} |"
-            )
-    (EVAL_DIR / "results.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for condition in CONDITIONS:
+            report_file = report_path(topic, condition, eval_dir)
+            data_file = metric_path(topic, condition, eval_dir)
+            content_count = empty_count = removed = "n/a"
+            if report_file.exists():
+                content, empty, removed_count = _report_stats(
+                    report_file.read_text(encoding="utf-8")
+                )
+                content_count, empty_count, removed = (
+                    str(content),
+                    str(empty),
+                    str(removed_count),
+                )
+
+            calls = tokens = seconds = failed_round1 = "n/a"
+            if data_file.exists():
+                data = json.loads(data_file.read_text(encoding="utf-8"))
+                stages = data.get("stages", {})
+                calls = str(sum(
+                    stage.get("llm_real_calls", 0) + stage.get("llm_cache_hits", 0)
+                    for stage in stages.values()
+                ))
+                tokens = str(sum(
+                    stage.get("input_tokens", 0) + stage.get("output_tokens", 0)
+                    for stage in stages.values()
+                ))
+                seconds = f"{sum(stage.get('seconds', 0) for stage in stages.values()):.2f}"
+                failed_round1 = str(
+                    data.get("evaluation", {}).get("failed_review_round1", 0)
+                )
+            row = [
+                topic,
+                condition,
+                calls,
+                tokens,
+                seconds,
+                content_count,
+                empty_count,
+                failed_round1,
+                removed,
+            ]
+            lines.append("| " + " | ".join(row) + " |")
+    (eval_dir / "results.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def report_sentences(topic: str, condition: str) -> list[dict[str, str]]:
-    path = report_path(topic, condition)
+def report_sentences(topic: str, condition: str, eval_dir: Path = EVAL_DIR) -> list[dict[str, str]]:
+    path = report_path(topic, condition, eval_dir)
     if not path.exists():
         return []
-
-    text = path.read_text(encoding="utf-8")
-    report_body, _, sources_body = text.partition("## Sources")
-    sources = {
-        int(match.group(1)): match.group(2)
-        for match in re.finditer(
-            r"^\s*(\d+)\.\s+(https?://\S+)", sources_body, re.MULTILINE
-        )
+    markdown = path.read_text(encoding="utf-8")
+    sources_block = markdown.partition("## Sources")[2]
+    source_urls = {
+        int(number): url
+        for number, url in SOURCE_ENTRY.findall(sources_block)
     }
-    section = ""
-    section_lines: dict[str, list[str]] = {}
-    for line in report_body.splitlines():
-        if line.startswith("## "):
-            section = line[3:].strip()
-            section_lines.setdefault(section, [])
+    rows: list[dict[str, str]] = []
+    for section_number, (_, block) in enumerate(_report_sections(markdown), 1):
+        content = _section_content(block)
+        if not content or content == "Not enough verified information found.":
             continue
-        if not line.strip() or line.startswith("#") or line.startswith(">"):
-            continue
-        if section:
-            section_lines[section].append(line.strip())
-
-    entries: list[dict[str, str]] = []
-    for section, lines in section_lines.items():
-        content = " ".join(lines)
-        citations = [int(value) for value in re.findall(r"\[(\d+)\]", content)]
-        sentence_text = re.sub(r"\s*\[\d+\]", "", content).strip()
-        sentences = re.split(r"(?<=[.!?])\s+", sentence_text)
-        urls = "; ".join(
-            dict.fromkeys(sources[number] for number in citations if number in sources)
+        content_lines = _content_lines(block)
+        final_citations = (
+            re.search(r"((?:\s+\[\d+\])+)\s*$", content_lines[-1])
+            if content_lines
+            else None
         )
-        for sentence in sentences:
+        source_ids = sorted({
+            int(number)
+            for number in CITATION.findall(final_citations.group(1) if final_citations else "")
+            if int(number) in source_urls
+        })
+        urls = "; ".join(source_urls[number] for number in source_ids)
+        for sentence in SENTENCE_SPLIT.split(content):
             sentence = sentence.strip()
             if sentence:
-                entries.append(
-                    {
-                        "topic": topic,
-                        "condition": condition,
-                        "section": section,
-                        "sentence": sentence,
-                        "source_urls": urls,
-                    }
-                )
-    return entries
+                rows.append({
+                    "topic": topic,
+                    "section": str(section_number),
+                    "sentence": sentence,
+                    "source_urls": urls,
+                })
+    return rows
 
 
-def write_scoring_files(topics: list[str]) -> None:
-    keyed_rows: list[tuple[dict[str, str], dict[str, str]]] = []
-    row_number = 1
+def write_scoring_files(topics: Sequence[str], eval_dir: Path = EVAL_DIR) -> None:
+    scoring_rows: list[dict[str, str]] = []
+    answer_rows: list[dict[str, str]] = []
+    row_ids = random.SystemRandom()
+    allocated_ids: set[str] = set()
     for topic in topics:
-        for condition, _ in CONDITIONS:
-            for entry in report_sentences(topic, condition):
-                row_id = f"R{row_number:04d}"
-                row_number += 1
-                scoring_row = {
+        for condition in CONDITIONS:
+            for entry in report_sentences(topic, condition, eval_dir):
+                row_id = f"R{row_ids.getrandbits(32):08X}"
+                while row_id in allocated_ids:
+                    row_id = f"R{row_ids.getrandbits(32):08X}"
+                allocated_ids.add(row_id)
+                scoring_rows.append({
                     "row_id": row_id,
+                    "topic": topic,
                     "sentence": entry["sentence"],
                     "source_urls": entry["source_urls"],
                     "supported": "",
                     "notes": "",
-                }
-                answer_row = {
+                })
+                answer_rows.append({
                     "row_id": row_id,
-                    "topic": entry["topic"],
-                    "condition": entry["condition"],
+                    "condition": condition,
                     "section": entry["section"],
-                    "source_urls": entry["source_urls"],
-                }
-                keyed_rows.append((scoring_row, answer_row))
+                })
 
-    random.Random(0).shuffle(keyed_rows)
-    with (EVAL_DIR / "scoring_sheet.csv").open(
+    random.Random(20261016).shuffle(scoring_rows)
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    with (eval_dir / "scoring_sheet.csv").open(
         "w", encoding="utf-8-sig", newline=""
-    ) as scoring_file:
+    ) as file:
         writer = csv.DictWriter(
-            scoring_file,
-            fieldnames=["row_id", "sentence", "source_urls", "supported", "notes"],
+            file,
+            fieldnames=["row_id", "topic", "sentence", "source_urls", "supported", "notes"],
         )
         writer.writeheader()
-        writer.writerows(row for row, _ in keyed_rows)
-
-    with (EVAL_DIR / "answer_key.csv").open(
+        writer.writerows(scoring_rows)
+    with (eval_dir / "answer_key.csv").open(
         "w", encoding="utf-8-sig", newline=""
-    ) as answer_file:
+    ) as file:
         writer = csv.DictWriter(
-            answer_file,
-            fieldnames=["row_id", "topic", "condition", "section", "source_urls"],
+            file,
+            fieldnames=["row_id", "condition", "section"],
         )
         writer.writeheader()
-        writer.writerows(answer for _, answer in keyed_rows)
+        writer.writerows(answer_rows)
 
 
-def write_progress(completed_runs: list[dict[str, str]], stopped_at: dict | None = None) -> None:
-    progress = {"completed_runs": completed_runs}
-    if stopped_at:
-        progress["stopped_at"] = stopped_at
-    PROGRESS_FILE.write_text(
-        json.dumps(progress, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-
-
-def write_partial_outputs(topics: list[str]) -> None:
-    write_results(topics)
-    write_scoring_files(topics)
-
-
-def pending_runs(topics: list[str]) -> list[tuple[str, str]]:
+def pending_runs(topics: Sequence[str], eval_dir: Path = EVAL_DIR) -> list[tuple[str, str]]:
     return [
         (topic, condition)
         for topic in topics
-        for condition, _ in CONDITIONS
-        if not report_path(topic, condition).exists()
+        for condition in CONDITIONS
+        if not report_path(topic, condition, eval_dir).exists()
     ]
 
 
-def main() -> int:
-    topics = load_topics()
-    PLANS_DIR.mkdir(parents=True, exist_ok=True)
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    print(f"Expected LLM calls (upper-bound estimate): {expected_llm_calls(topics)}")
+def run_evaluation(
+    topics: Sequence[str],
+    *,
+    eval_dir: Path = EVAL_DIR,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    input_fn: Callable[[str], str] = input,
+) -> int:
+    estimate = expected_llm_calls(topics, eval_dir)
+    print(
+        f"Expected LLM calls: approximately {estimate} "
+        "(one-pass estimate; extra searches, revisions, and verification batches vary)."
+    )
     try:
-        input("Press Enter to begin evaluation...")
+        input_fn("Press Enter to begin evaluation: ")
     except EOFError:
         print("No confirmation received; evaluation cancelled.")
         return 1
 
-    completed_runs: list[dict[str, str]] = []
+    plans_dir = eval_dir / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
     for topic in topics:
-        for condition, no_review in CONDITIONS:
-            output_report = report_path(topic, condition)
-            if output_report.exists():
-                print(f"Skipping existing report: {output_report}")
-                completed_runs.append(
-                    {"topic": topic, "condition": condition, "status": "existing"}
-                )
-                write_progress(completed_runs)
+        for condition in CONDITIONS:
+            output_file = report_path(topic, condition, eval_dir)
+            if output_file.exists():
+                print(f"Skipping existing report: {topic} [{condition}]")
                 continue
-
-            print(f"Running {condition}: {topic}")
-            completed = run_condition(topic, condition, no_review)
-            output = f"{completed.stdout}\n{completed.stderr}"
-            relocate_outputs(topic, condition)
-
-            if is_daily_quota_error(output):
-                print(f"Daily quota error; stopping evaluation at {topic} ({condition}).")
-                completed_runs.append(
-                    {"topic": topic, "condition": condition, "status": "quota-error"}
-                )
-                write_progress(
-                    completed_runs,
-                    {"topic": topic, "condition": condition},
-                )
-                write_partial_outputs(topics)
-                print("Pending runs:")
-                for remaining_topic, remaining_condition in pending_runs(topics):
-                    print(f"- {remaining_topic} ({remaining_condition})")
+            command = build_command(topic, condition, eval_dir)
+            completed = runner(
+                command,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+            _relocate_outputs(topic, condition, eval_dir)
+            if "Daily free quota exhausted" in output:
+                remaining = pending_runs(topics, eval_dir)
+                print(f"Daily free quota exhausted during {topic} [{condition}].")
+                print("Left to run:")
+                for remaining_topic, remaining_condition in remaining:
+                    print(f"- {remaining_topic} [{remaining_condition}]")
+                write_results(topics, eval_dir)
+                write_scoring_files(topics, eval_dir)
                 return 1
-
             if completed.returncode:
-                completed_runs.append(
-                    {"topic": topic, "condition": condition, "status": "failed"}
-                )
-                write_progress(
-                    completed_runs,
-                    {"topic": topic, "condition": condition},
-                )
-                write_partial_outputs(topics)
                 print(output[-5000:])
                 print(
-                    f"Evaluation run failed for {topic} ({condition}), "
-                    f"exit code {completed.returncode}."
+                    f"Evaluation failed for {topic} [{condition}] "
+                    f"(exit {completed.returncode})."
                 )
+                write_results(topics, eval_dir)
+                write_scoring_files(topics, eval_dir)
                 return completed.returncode
+            print(f"Completed: {topic} [{condition}]")
 
-            completed_runs.append(
-                {"topic": topic, "condition": condition, "status": "done"}
-            )
-            write_progress(completed_runs)
-            write_partial_outputs(topics)
-
-    write_partial_outputs(topics)
-    print(
-        "Wrote eval/results.md, eval/scoring_sheet.csv, eval/answer_key.csv, "
-        "and eval/progress.json."
-    )
+    write_results(topics, eval_dir)
+    write_scoring_files(topics, eval_dir)
+    print(f"Wrote results and blind scoring files under {eval_dir}.")
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--topics", type=int, default=None, help="Run only the first N topics.")
+    args = parser.parse_args(argv)
+    if args.topics is not None and args.topics < 1:
+        parser.error("--topics must be at least 1")
+    topics = load_topics(limit=args.topics)
+    return run_evaluation(topics)
 
 
 if __name__ == "__main__":

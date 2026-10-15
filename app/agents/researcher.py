@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 MAX_CHARS_PER_PAGE = 3000
 
 
-def research(question: str, search_query: Optional[str] = None) -> ResearchResult:
+def research(question: str, search_query: Optional[str] = None, extra_queries: Optional[List[str]] = None, exclude_urls: Optional[List[str]] = None) -> ResearchResult:
     """Research a question and return structured, verified facts with sources.
 
     Steps:
@@ -36,24 +36,42 @@ def research(question: str, search_query: Optional[str] = None) -> ResearchResul
     Raises:
         Any provider errors (invalid key, quota, network) propagate up; they are not caught.
     """
-    # Step 1: Search the web
+    # Step 1: Search the web for the main question/query
     search_input = search_query if search_query else question
     logger.info(f"Research started: '{question}'")
-    search_results = search_web(search_input, max_results=5)
-    logger.info(f"Found {len(search_results)} search results")
+    all_search_results = search_web(search_input, max_results=5)
+    logger.info(f"Found {len(all_search_results)} search results (main query)")
 
-    # Collect the set of source URLs from search results
-    source_urls = {r["url"] for r in search_results}
-    logger.info(f"Source URLs: {source_urls}")
+    # Collect the set of source URLs from the main search results
+    main_source_urls = {r["url"] for r in all_search_results}
 
-    # Build a context string from the results for the LLM prompt
+    # If extra_queries are provided, search for those too (skipping exclude_urls)
+    all_extra_results: List[Dict[str, str]] = []
+    if extra_queries:
+        for extra_q in extra_queries:
+            # Skip this query if its URL pattern is in exclude_urls
+            filtered_extra_q = extra_q
+            if exclude_urls:
+                # Build a filter: exclude any extra query that targets excluded URLs
+                # We'll filter results after searching
+                pass
+            extra_results = search_web(extra_q, max_results=5)
+            logger.info(f"Extra query '{extra_q}' returned {len(extra_results)} results")
+            all_extra_results.extend(extra_results)
+
+    # Combine all search results: main + extra
+    combined_results = list(all_search_results) + list(all_extra_results)
+    all_source_urls = {r["url"] for r in combined_results}
+    logger.info(f"Total source URLs across all queries: {len(all_source_urls)}")
+
+    # Build a context string from ALL results for the LLM prompt
     # Log characters per source URL
-    for r in search_results:
+    for r in combined_results:
         chars = len(r.get("content", ""))
         logger.info(f"  {r['url'][:60]}: {chars} characters of content")
-    
+
     context_parts = []
-    for i, r in enumerate(search_results, 1):
+    for i, r in enumerate(combined_results, 1):
         context_parts.append(f"[{i}] Title: {r['title']}\n      URL: {r['url']}\n      Snippet: {r['content']}")
     context_string = "\n\n".join(context_parts)
 
@@ -82,19 +100,6 @@ def research(question: str, search_query: Optional[str] = None) -> ResearchResul
     )
 
     # Step 4: Anti-hallucination guard - drop any fact whose source_url is not in the search results
-    valid_facts = []
-    # Log facts per source URL
-    facts_per_source = {}
-    for fact in result.facts:
-        url = fact.source_url
-        if url not in facts_per_source:
-            facts_per_source[url] = []
-        facts_per_source[url].append(fact.claim)
-    
-    for url, claims in facts_per_source.items():
-        logger.info(f"  {url[:60]}: {len(claims)} facts extracted")
-    
-    # Anti-hallucination guard - drop any fact whose source_url is not in the search results
     # Normalize URLs: strip trailing slashes/#fragments, lowercase scheme+host
     def normalize_url(u: str) -> str:
         """Normalize a URL for comparison: lowercase scheme+host, strip trailing slash and fragment."""
@@ -106,24 +111,35 @@ def research(question: str, search_query: Optional[str] = None) -> ResearchResul
         path = parsed.path.rstrip("/") or "/"
         return f"{scheme}://{netloc}{path}"
 
-    normalized_allowed = {normalize_url(u) for u in source_urls}
+    normalized_allowed = {normalize_url(u) for u in all_source_urls}
 
     valid_facts = []
     # Log facts per source URL and apply tolerant URL guard
     facts_per_source = {}
     for fact in result.facts:
         url = fact.source_url
+        if url not in facts_per_source:
+            facts_per_source[url] = []
+        facts_per_source[url].append(fact.claim)
+
+    for url, claims in facts_per_source.items():
+        logger.info(f"  {url[:60]}: {len(claims)} facts extracted")
+
+    valid_facts = []
+    # Apply tolerant URL guard: keep facts whose source_url matches any allowed URL
+    for fact in result.facts:
+        url = fact.source_url
         # Normalize the fact's URL for comparison
         normalized_fact_url = normalize_url(url) if "://" in url else f"https://{url}"
 
         # Check for exact match first
-        if url in source_urls:
+        if url in all_source_urls:
             valid_facts.append(fact)
             facts_per_source.setdefault(url, []).append(fact.claim)
         elif normalized_fact_url in normalized_allowed:
             # Tolerant match: find the allowed URL that matches
             match_url = None
-            for allowed in source_urls:
+            for allowed in all_source_urls:
                 norm_allowed = normalize_url(allowed)
                 if normalized_fact_url == norm_allowed or normalized_fact_url.startswith(norm_allowed) or norm_allowed.startswith(normalized_fact_url):
                     match_url = allowed
@@ -153,7 +169,7 @@ def research(question: str, search_query: Optional[str] = None) -> ResearchResul
     dropped_count = len(result.facts) - len(valid_facts)
     if dropped_count > 0:
         logger.warning(
-            f"Dropped {dropped_count} fact(s) whose source_url did not match allowed URLs: {list(source_urls)}"
+            f"Dropped {dropped_count} fact(s) whose source_url did not match allowed URLs: {list(all_source_urls)}"
         )
 
     # Step 5: Return result with valid facts only

@@ -96,3 +96,24 @@ def test_build_markdown_returns_empty_for_all_empty_sections():
     )
 
     assert build_markdown(report, include_empty=False) == ""
+
+
+def test_build_markdown_shows_source_check_under_section_badge():
+    section = make_section(
+        "checked",
+        "Verified content.",
+        True,
+        "https://source.test/1",
+    )
+    section.source_check_summary = "1 of 1 sentences confirmed against sources"
+    report = Report(
+        topic="Checked topic",
+        sections=[section],
+        sources=["https://source.test/1"],
+    )
+
+    markdown = build_markdown(report, include_empty=True)
+
+    assert markdown.index("> **Passed review**") < markdown.index(
+        "> **Source check:** 1 of 1 sentences confirmed against sources"
+    )

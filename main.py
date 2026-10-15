@@ -40,9 +40,24 @@ def main():
         help="Run full pipeline: plan -> research -> write -> report",
     )
     parser.add_argument(
+        "--single-agent",
+        action="store_true",
+        help="Run the single-agent baseline for comparison.",
+    )
+    parser.add_argument(
         "--no-review",
         action="store_true",
         help="Write sections without running the reviewer.",
+    )
+    parser.add_argument(
+        "--no-verifier",
+        action="store_true",
+        help="Skip checking final sentences against their original source pages.",
+    )
+    parser.add_argument(
+        "--no-editor",
+        action="store_true",
+        help="Skip the report-level executive summary and duplicate detection.",
     )
     parser.add_argument(
         "--max-sections",
@@ -71,6 +86,11 @@ def main():
         "--no-cache",
         action="store_true",
         help="Disable disk cache (.cache/ folder)",
+    )
+    parser.add_argument(
+        "--no-supervisor",
+        action="store_true",
+        help="Switch off the Supervisor gap-filling loop for comparison testing",
     )
     args = parser.parse_args()
     if args.no_cache:
@@ -109,7 +129,7 @@ def main():
         print(f"Facts returned: {len(result.facts)}")
         print(f"Facts after URL guard: {len(result.facts)}")
 
-    elif args.pipeline:
+    elif args.pipeline or args.single_agent:
         from app.pipeline import run_pipeline, print_report
         from app.report import save_report
 
@@ -124,6 +144,10 @@ def main():
             max_rounds=args.max_rounds,
             plan_file=args.plan_file,
             no_review=args.no_review,
+            no_supervisor=args.no_supervisor,
+            no_verifier=args.no_verifier,
+            no_editor=args.no_editor,
+            single_agent=args.single_agent,
         )
         metrics_data = metrics.snapshot()
         print(metrics.summary())

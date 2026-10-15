@@ -10,6 +10,8 @@ from .config import (
     GEMINI_MODEL,
     LLM_PROVIDER,
     OLLAMA_MODEL,
+    VERIFIER_MODEL,
+    VERIFIER_PROVIDER,
 )
 from app.cache import cache_get, cache_set
 from app.metrics import metrics
@@ -19,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 # Two retries after the initial request.
 RETRY_DELAYS = (20, 40)
+
+
+class LLMProviderError(RuntimeError):
+    """An LLM provider request failed and should stop the pipeline."""
 
 
 def _sleep(seconds: int) -> None:
@@ -31,24 +37,26 @@ def _llm_cache_key(provider: str, model: str, system: str, user: str) -> str:
     return f"{provider}:{model}:{system}:{user}"
 
 
-def ask(system: str, user: str) -> str:
+def ask(system: str, user: str, provider: str | None = None) -> str:
     """Send one request to the LLM provider chosen by LLM_PROVIDER.
 
     Retry temporary per-minute rate limits and timeouts for every provider.
     """
-    provider = LLM_PROVIDER
+    use_verifier_model = provider is not None and provider == VERIFIER_PROVIDER
+    provider = provider or LLM_PROVIDER
+    model = _model_for_provider(provider, use_verifier_model=use_verifier_model)
 
     for attempt in range(len(RETRY_DELAYS) + 1):
         try:
             if provider == "gemini":
                 metrics.record_llm_call()
-                return _ask_gemini(system, user)
+                return _ask_gemini(system, user, model)
             elif provider == "ollama":
                 metrics.record_llm_call()
-                return _ask_ollama(system, user)
+                return _ask_ollama(system, user, model)
             elif provider == "anthropic":
                 metrics.record_llm_call()
-                return _ask_anthropic(system, user)
+                return _ask_anthropic(system, user, model)
             else:
                 raise ValueError(f"Unknown LLM provider: {provider}")
         except Exception as e:
@@ -61,12 +69,12 @@ def ask(system: str, user: str) -> str:
             is_invalid_error = "invalid" in lowered_error or "not found" in lowered_error
 
             if is_daily_quota:
-                raise RuntimeError(
+                raise LLMProviderError(
                     f"Daily free quota exhausted for LLM provider {provider}: {err_str}"
                 ) from e
 
             if is_client_error or is_invalid_error:
-                raise RuntimeError(
+                raise LLMProviderError(
                     f"LLM provider {provider} call failed: {err_str}"
                 ) from e
 
@@ -80,7 +88,7 @@ def ask(system: str, user: str) -> str:
             is_timeout = "timeout" in lowered_error or "timed out" in lowered_error
 
             if not (is_rate_limit or is_timeout):
-                raise RuntimeError(
+                raise LLMProviderError(
                     f"LLM provider {provider} call failed: {err_str}"
                 ) from e
 
@@ -98,18 +106,30 @@ def ask(system: str, user: str) -> str:
                 _sleep(delay)
                 continue
 
-            raise RuntimeError(
+            raise LLMProviderError(
                 f"LLM provider {provider} call failed after "
                 f"{len(RETRY_DELAYS) + 1} attempts. Last error: {err_str}"
             ) from e
 
 
-def _ask_gemini(system: str, user: str) -> str:
+def _model_for_provider(provider: str, use_verifier_model: bool = False) -> str:
+    if use_verifier_model and provider == VERIFIER_PROVIDER:
+        return VERIFIER_MODEL
+    if provider == "gemini":
+        return GEMINI_MODEL
+    if provider == "ollama":
+        return OLLAMA_MODEL
+    if provider == "anthropic":
+        return ANTHROPIC_MODEL
+    raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def _ask_gemini(system: str, user: str, model: str | None = None) -> str:
     from google import genai as google_genai
 
     client = google_genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=model or GEMINI_MODEL,
         config={"system_instruction": system},
         contents=user,
     )
@@ -127,11 +147,11 @@ def _ask_gemini(system: str, user: str) -> str:
     return text
 
 
-def _ask_ollama(system: str, user: str) -> str:
+def _ask_ollama(system: str, user: str, model: str | None = None) -> str:
     import ollama
 
     response = ollama.chat(
-        model=OLLAMA_MODEL,
+        model=model or OLLAMA_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -140,12 +160,12 @@ def _ask_ollama(system: str, user: str) -> str:
     return response["message"]["content"]
 
 
-def _ask_anthropic(system: str, user: str) -> str:
+def _ask_anthropic(system: str, user: str, model: str | None = None) -> str:
     import anthropic
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     response = client.messages.create(
-        model=ANTHROPIC_MODEL,
+        model=model or ANTHROPIC_MODEL,
         max_tokens=1000,
         system=system,
         messages=[{"role": "user", "content": user}],
@@ -153,7 +173,13 @@ def _ask_anthropic(system: str, user: str) -> str:
     return response.content[0].text
 
 
-def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
+def ask_json(
+    system: str,
+    user: str,
+    schema: type,
+    retries: int = 2,
+    provider: str | None = None,
+) -> Any:
     """Send a request and force a JSON response that validates against a Pydantic schema.
 
     - Appends a JSON schema hint to the system prompt.
@@ -162,16 +188,11 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
     - On failure, retries and tells the model what was wrong.
     - Raises ValueError after the last retry.
     """
-    provider = LLM_PROVIDER
-
-    if provider == "gemini":
-        model = GEMINI_MODEL
-    elif provider == "ollama":
-        model = OLLAMA_MODEL
-    elif provider == "anthropic":
-        model = ANTHROPIC_MODEL
-    else:
-        model = ""
+    selected_provider = provider or LLM_PROVIDER
+    model = _model_for_provider(
+        selected_provider,
+        use_verifier_model=provider is not None and selected_provider == VERIFIER_PROVIDER,
+    )
 
     schema_hint = (
         "\n\nOUTPUT REQUIREMENTS: Respond with valid JSON only. No prose, "
@@ -181,16 +202,19 @@ def ask_json(system: str, user: str, schema: type, retries: int = 2) -> Any:
     system_with_hint = system + schema_hint
 
     # Check disk cache
-    cache_key = _llm_cache_key(provider, model, system, user)
+    cache_key = _llm_cache_key(selected_provider, model, system, user)
     cached = cache_get(cache_key)
     if cached is not None:
         metrics.record_llm_call(cache_hit=True)
-        logger.info("LLM cache hit for key '%s/%s'", provider, model)
+        logger.info("LLM cache hit for key '%s/%s'", selected_provider, model)
         return schema.model_validate(cached)
 
     for attempt in range(1 + retries):
         # Provider errors (already retried inside ask) propagate unchanged.
-        raw = ask(system_with_hint, user)
+        if provider is None:
+            raw = ask(system_with_hint, user)
+        else:
+            raw = ask(system_with_hint, user, provider=selected_provider)
 
         try:
             cleaned = _strip_markdown_fences(raw)

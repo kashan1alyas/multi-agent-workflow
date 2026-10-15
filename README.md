@@ -10,7 +10,8 @@ The app follows a multi-agent pipeline:
 - The researcher fetches web results and extracts only concrete, source-backed facts.
 - The writer drafts each section from those facts.
 - The reviewer checks the draft for unsupported numbers, invented claims, and wrong attribution.
-- The report assembler combines accepted sections and a deduplicated source list into a final markdown report.
+- The report assembler orders passed sections first, followed by failed reviews and sections with no usable evidence. It writes a Markdown report with numbered sections and deduplicated sources.
+- The web report view labels verified, unverified, and no-evidence sections, and provides Markdown-copy and PDF-download actions.
 
 The result is a concise, verifiable report for questions like: "What are the main trends in electric scooters in Pakistan?"
 
@@ -110,6 +111,43 @@ python main.py "Your research question" --no-cache
 ```
 
 The generated report is saved under `reports/`.
+
+## Running the web app
+
+The web app uses the FastAPI backend and the Vite frontend. Start each in a separate PowerShell window from the project root.
+
+1. Start the backend with your virtual environment activated:
+
+   ```powershell
+   uvicorn app.api:app --reload
+   ```
+
+   The API runs at `http://localhost:8000`.
+
+2. In a second window, install and start the frontend:
+
+   ```powershell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+3. Open the Vite URL printed in the terminal, normally `http://localhost:5173`.
+
+To check or prepare the frontend for production, run these commands from the `frontend/` directory:
+
+```powershell
+npm run lint
+npm run build
+```
+
+## Viewing and exporting reports
+
+In the web report view, sections are shown in this order: passed review, failed review with usable evidence, then no usable evidence. Headings are numbered in display order. Sections without usable sources are labeled **No evidence found**.
+
+- **Copy report as Markdown** copies only sections with usable sources. If none are available, the copy button is disabled. Copied sections are renumbered, and their citations and source list include only sources from those sections.
+- The saved Markdown report in `reports/` includes all sections, including those with no usable evidence.
+- **Download as PDF** opens the browser's print dialog. Choose the browser's “Save as PDF” destination to save the report as a PDF.
 
 ## Running tests
 

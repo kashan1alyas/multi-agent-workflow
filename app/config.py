@@ -42,6 +42,15 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+_PROVIDER_MODELS = {
+    "gemini": GEMINI_MODEL,
+    "ollama": OLLAMA_MODEL,
+    "anthropic": ANTHROPIC_MODEL,
+}
+VERIFIER_PROVIDER = os.getenv("VERIFIER_PROVIDER", LLM_PROVIDER).lower()
+VERIFIER_MODEL = os.getenv("VERIFIER_MODEL") or _PROVIDER_MODELS.get(
+    VERIFIER_PROVIDER, ""
+)
 INPUT_PRICE_PER_MTOK = float(os.getenv("INPUT_PRICE_PER_MTOK", "0"))
 OUTPUT_PRICE_PER_MTOK = float(os.getenv("OUTPUT_PRICE_PER_MTOK", "0"))
 
@@ -50,14 +59,22 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
-# Conditionally require keys based on selected provider
-if LLM_PROVIDER == "gemini":
-    _validate_key("GEMINI_API_KEY", GEMINI_API_KEY)
-elif LLM_PROVIDER == "ollama":
-    pass
-elif LLM_PROVIDER == "anthropic":
-    _validate_key("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
-else:
-    raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER}. Choose from: gemini, ollama, anthropic")
+
+def _validate_provider(provider: str) -> None:
+    if provider == "gemini":
+        _validate_key("GEMINI_API_KEY", GEMINI_API_KEY)
+    elif provider == "ollama":
+        return
+    elif provider == "anthropic":
+        _validate_key("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
+    else:
+        raise ValueError(
+            f"Unknown LLM provider: {provider}. Choose from: gemini, ollama, anthropic"
+        )
+
+
+_validate_provider(LLM_PROVIDER)
+if VERIFIER_PROVIDER != LLM_PROVIDER:
+    _validate_provider(VERIFIER_PROVIDER)
 
 _validate_key("TAVILY_API_KEY", TAVILY_API_KEY)

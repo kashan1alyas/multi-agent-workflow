@@ -103,8 +103,13 @@ export default function ReportView({ result }) {
 
   const raw = Array.isArray(result) ? result : toArray(result?.sections);
   const sections = raw.map(normalize);
+  const editorSummary = typeof result?.editor_summary === "string"
+    ? result.editor_summary
+    : "";
+  const editorNotes = toArray(result?.editor_notes);
+  const removedSentences = toArray(result?.editor_removed_sentences);
 
-  if (sections.length === 0) {
+  if (sections.length === 0 && !editorSummary) {
     return <div className="card">No sections were produced.</div>;
   }
 
@@ -145,6 +150,34 @@ export default function ReportView({ result }) {
         </button>
       </div>
       {copyError && <p role="alert">{copyError}</p>}
+
+      {editorSummary && (
+        <div className="card">
+          <h2>Executive summary</h2>
+          <p>{editorSummary}</p>
+        </div>
+      )}
+
+      {(editorNotes.length > 0 || removedSentences.length > 0) && (
+        <details className="card">
+          <summary>Editor notes</summary>
+          {editorNotes.length > 0 && (
+            <ul>
+              {editorNotes.map((note, i) => <li key={`note-${i}`}>{textOf(note)}</li>)}
+            </ul>
+          )}
+          {removedSentences.length > 0 && (
+            <>
+              <h3>Removed duplicate sentences</h3>
+              <ul>
+                {removedSentences.map((sentence, i) => (
+                  <li key={`duplicate-${i}`}>{textOf(sentence)}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </details>
+      )}
 
       {sections.map((s, i) => (
         <div className="card" key={i}>
