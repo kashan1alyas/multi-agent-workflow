@@ -21,7 +21,8 @@ flowchart LR
     V -->|failed| W
     E --> RP[Report]
     RP -->|single-agent| SA[Single-Agent Baseline]
-    
+```
+
 This flow implements the Supervisor gap-filling loop: after each section is researched, the Supervisor decides whether enough facts have been collected. If not, it generates up to 2 new search queries (differing from already-used ones) and re-searches. At most 2 extra rounds per section and 6 total per run are allowed. The Reviewer then checks the draft, and the Editor assembles the report with deduplicated sources and per-section pass/fail status.
 
 ## Windows setup
