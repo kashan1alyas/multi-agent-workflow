@@ -1,33 +1,31 @@
-# Report evaluation harness
+# Evaluation
 
-Run the experiment from the repository root:
+This directory contains the evaluation results for the Supervisor gap-filling loop against a single-agent baseline.
 
-```powershell
-python eval\run_eval.py
-```
+## How to run the evaluation
 
-The harness lists an estimated LLM-call count before it starts and waits for
-Enter. The estimate assumes a typical one-pass run (four single-agent actions;
-one planning/research/write pass per pipeline section; and, for `full`, one
-verification call per section plus the report Editor). Actual calls vary with
-searches, review revisions, and verifier URL batching. Use `--topics N` to run
-only the first N topics. Each run uses at most three sections. Pipeline
-conditions share the topic's plan file. Existing condition report files are
-skipped so interrupted runs can resume. On a daily-quota error, the harness
-stops and lists the runs left to complete.
+1. Ensure the virtual environment is activated.
+2. Run the pipeline with and without the `--no-supervisor` flag on the same set of questions.
+3. Paste the per-condition results into `scores.md` using the template below.
+3. Review the scores and note any patterns or edge cases.
 
-Outputs are saved under `eval/`: reports and metrics, `results.md`, a shuffled
-`scoring_sheet.csv`, and its separate `answer_key.csv`. The scoring sheet does
-not contain condition labels or automated Verifier verdicts; row IDs are
-randomized so their order does not reveal the condition.
+## Evaluation conditions
 
-**Complete the blind scoring in `scoring_sheet.csv` before opening
-`answer_key.csv`.** For each sentence, fill `supported` with `yes`, `partly`,
-or `no` (and optionally add notes). Only after scoring is complete, run:
+Each condition is scored on a question-by-question basis. The final per-condition result is:
+- **yes** if the behavior holds for the majority of questions,
+- **partly** if it holds for some but not all questions,
+- **no** if it does not hold.
 
-```powershell
-python eval\score.py
-```
+| Condition | yes | partly | no |
+|-----------|-----|--------|----|
+| A: Enough facts returns "enough" without calling the LLM | | | |
+| B: Too few facts returns new queries that differ from used ones | | | |
+| C: The loop stops after 2 rounds per section | | | |
+| D: The loop respects MAX_EXTRA_SEARCHES = 6 per run | | | |
 
-This joins ratings to conditions and writes `eval/scores.md`, including counts
-and percentages for each rating and the mean number of sentences per report.
+## How to paste results
+
+1. Run `python main.py "question" --pipeline` and `python main.py "question" --no-supervisor`.
+2. Record whether each condition (A–D) was observed.
+3. Fill in the yes/partly/no column accordingly.
+4. Save the completed table as `eval/scores.md` and reference it from the README.md Results section.

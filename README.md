@@ -4,16 +4,7 @@ This project turns a market-research question into a structured report by combin
 
 ## What the project does
 
-The app follows a multi-agent pipeline:
-
-- The planner breaks a topic into multiple research sections.
-- The researcher fetches web results and extracts only concrete, source-backed facts.
-- The writer drafts each section from those facts.
-- The reviewer checks the draft for unsupported numbers, invented claims, and wrong attribution.
-- The report assembler orders passed sections first, followed by failed reviews and sections with no usable evidence. It writes a Markdown report with numbered sections and deduplicated sources.
-- The web report view labels verified, unverified, and no-evidence sections, and provides Markdown-copy and PDF-download actions.
-
-The result is a concise, verifiable report for questions like: "What are the main trends in electric scooters in Pakistan?"
+The app follows a multi-agent pipeline: a Planner breaks a topic into research sections, a Researcher fetches and verifies facts, a Writer drafts each section, a Supervisor gap-fills via search if too few facts are found, a Reviewer checks for unsupported claims, and an Editor assembles the final report with deduplicated sources and per-section pass/fail status. A single-agent baseline runs the pipeline without the Supervisor loop for comparison.
 
 ## Architecture
 
@@ -21,11 +12,17 @@ The result is a concise, verifiable report for questions like: "What are the mai
 flowchart LR
     P[Planner] --> R[Researcher]
     R --> W[Writer]
-    W <--> V[Reviewer]
-    V --> RP[Report]
-```
-
-This is the same flow the project implements: Planner -> Researcher -> Writer -> Reviewer -> Report, with the Writer and Reviewer iterating until the section is accepted or the retry limit is reached.
+    W --> S[Supervisor]
+    S -->|enough| W
+    S -->|search_again| R
+    S -->|give_up| W
+    W --> V[Reviewer]
+    V -->|passed| E[Editor]
+    V -->|failed| W
+    E --> RP[Report]
+    RP -->|single-agent| SA[Single-Agent Baseline]
+    
+This flow implements the Supervisor gap-filling loop: after each section is researched, the Supervisor decides whether enough facts have been collected. If not, it generates up to 2 new search queries (differing from already-used ones) and re-searches. At most 2 extra rounds per section and 6 total per run are allowed. The Reviewer then checks the draft, and the Editor assembles the report with deduplicated sources and per-section pass/fail status.
 
 ## Windows setup
 
@@ -51,6 +48,7 @@ This is the same flow the project implements: Planner -> Researcher -> Writer ->
    ```
 
 5. Add your API credentials:
+
    - `TAVILY_API_KEY` for web search
    - provider keys depending on the model you want to use (`GEMINI_API_KEY` or `ANTHROPIC_API_KEY`)
    - optionally set `LLM_PROVIDER` to `gemini`, `ollama`, or `anthropic`
@@ -61,7 +59,7 @@ This is the same flow the project implements: Planner -> Researcher -> Writer ->
    python main.py "What are the main trends in electric scooters in Pakistan?" --pipeline
    ```
 
-## Switching LLM providers
+## Configuration
 
 The active provider is selected by the `LLM_PROVIDER` value in `.env`:
 
@@ -86,33 +84,20 @@ The project supports the following provider-specific settings in `.env`:
 
 The app validates the configured provider at startup. If a required key is missing or looks like a placeholder, it raises a clear error instead of silently using a broken configuration.
 
-## Running the pipeline
-
-Use the CLI entry point in `main.py`:
+## CLI flags
 
 ```powershell
-python main.py "Your research question"
-```
-
-This runs the default full pipeline (plan → research → write → review → report).
-
-You can run the individual modes explicitly:
-
-```powershell
-python main.py "Your research question" --research
-python main.py "Your research question" --pipeline
-```
-
-Optional flags:
-
-```powershell
-python main.py "Your research question" --max-sections 3
-python main.py "Your research question" --no-cache
+python main.py "Your research question" --pipeline              # full pipeline
+python main.py "Your research question" --research              # research-only mode
+python main.py "Your research question" --max-sections 3       # limit sections
+python main.py "Your research question" --no-supervisor         # skip supervisor loop
+python main.py "Your research question" --no-cache              # disable disk cache
+python main.py "Your research question" --no-review             # skip reviewer
 ```
 
 The generated report is saved under `reports/`.
 
-## Running the web app
+## Web app
 
 The web app uses the FastAPI backend and the Vite frontend. Start each in a separate PowerShell window from the project root.
 
@@ -147,7 +132,7 @@ In the web report view, sections are shown in this order: passed review, failed 
 
 - **Copy report as Markdown** copies only sections with usable sources. If none are available, the copy button is disabled. Copied sections are renumbered, and their citations and source list include only sources from those sections.
 - The saved Markdown report in `reports/` includes all sections, including those with no usable evidence.
-- **Download as PDF** opens the browser's print dialog. Choose the browser's “Save as PDF” destination to save the report as a PDF.
+- **Download as PDF** opens the browser's print dialog. Choose the browser's "Save as PDF" destination to save the report as a PDF.
 
 ## Running tests
 
@@ -157,28 +142,40 @@ From the project root:
 pytest
 ```
 
-The test suite covers the research guardrail and the reviewer logic, including scenarios where facts are missing or drafts include unsupported numbers or invented claims.
+The test suite covers the research guardrail and the reviewer logic, including scenarios where facts are missing or drafts include unsupported numbers or invented claims. All new tests use mocked LLM calls.
 
-## Design decisions
+## Evaluation method
 
-### Source-URL validation
+The evaluation compares the single-agent baseline against the full pipeline with the Supervisor gap-filling loop. Each condition (A–D) is scored on yes / partly / no for: enough facts, new queries differ from used ones, loop stops after 2 rounds, and loop respects MAX_EXTRA_SEARCHES. Results are recorded in `eval/scores.md`.
 
-The researcher does not trust the model blindly. After the LLM extracts facts, each fact is checked to confirm that `source_url` exactly matches one of the URLs returned by the web search. Facts that do not match are dropped before they enter the draft pipeline. This is the main anti-hallucination guardrail.
+## Results
 
-### Two-step reviewer
+TODO: paste eval/scores.md here
 
-The reviewer is intentionally two-stage:
+| Condition | yes | partly | no |
+|-----------|-----|--------|----|
+| A         |     |        |    |
+| B         |     |        |    |
+| C         |     |        |    |
+| D         |     |        |    |
 
-1. A deterministic rule checks numeric content in the draft against the fact pool to catch unsupported numbers and missing evidence.
-2. An LLM-based review scans the draft for unsupported claims, exaggerations, and wrong attribution.
+## Limitations
 
-This combines a cheap, reliable check for numbers with a semantic pass for claims that cannot be reduced to a simple regex.
+- The free-tier quota limits the number of LLM calls and web searches per run; the pipeline stops if the daily quota is exhausted.
+- The Reviewer checks drafted claims only against the extracted fact pool; claims not in the fact set are flagged as unsupported.
+- Source quality varies: official (.gov.pk, .gov, .int, .org.pk), academic (.edu, .ac, sciencedirect.com, etc.), news (a small constant list), aggregator (market research report sites), and company (.com.pk, .com) domains are classified automatically; classification may not match every user's expectations.
+- Forecasts and market-size estimates may be out of date; the project does not enforce recency.
+- No guarantee is made that any claim in the output is true; all claims should be verified against the cited sources.
+- One human scored the evaluation results; inter-rater reliability was not measured.
 
-### Why unverified sections are labeled rather than hidden
+## Future work
 
-If a section cannot be researched or cannot pass review, the pipeline does not silently omit it. Instead, it marks the section as failed and keeps the label, issue list, and source trail visible in the final report. This keeps the output honest: the user can see where evidence is weak without losing the overall structure of the report.
+- Add more source-quality heuristics (e.g., domain reputation, publication date).
+- Support custom search APIs beyond Tavily.
+- Introduce a confidence score per fact.
+- Allow the Supervisor budget to be configured per run via CLI.
+- Add a fragment mode so only the changed section is re-generated on query updates.
 
-## Notes
+---
 
-- The project expects a valid `TAVILY_API_KEY` even when the model provider is set to Gemini or Anthropic because search is a required part of the workflow.
-- The code and report files are intentionally separated so generated outputs remain out of source control while the implementation stays explicit and reviewable.
+Generated by AI agents; verify sources.

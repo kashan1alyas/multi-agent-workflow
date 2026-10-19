@@ -10,6 +10,28 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    value = os.getenv(name, str(default))
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer.") from exc
+    if parsed < 1:
+        raise ValueError(f"{name} must be a positive integer.")
+    return parsed
+
+
+MAX_TOPIC_LENGTH = _positive_int_env("MAX_TOPIC_LENGTH", 200)
+MAX_SECTIONS = min(_positive_int_env("MAX_SECTIONS", 3), 3)
+MAX_RUNS_PER_IP_PER_DAY = _positive_int_env("MAX_RUNS_PER_IP_PER_DAY", 3)
+MAX_RUNS_PER_DAY = _positive_int_env("MAX_RUNS_PER_DAY", 30)
+RUN_TIMEOUT_SECONDS = _positive_int_env("RUN_TIMEOUT_SECONDS", 300)
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").strip()
+CACHE_DIR = Path(
+    os.getenv("CACHE_DIR", str(PROJECT_ROOT / ".cache"))
+).expanduser().resolve()
+
+
 def _is_placeholder(key: str, value: str) -> bool:
     """Check if a value looks like a placeholder.
 
@@ -28,10 +50,9 @@ def _is_placeholder(key: str, value: str) -> bool:
 def _validate_key(key: str, value: str) -> None:
     """Raise ValueError if the key looks like a placeholder."""
     if _is_placeholder(key, value):
-        first5 = value[:5] if value else "(empty)"
         raise ValueError(
             f"{key} looks like a placeholder. Put your real key in .env and "
-            f"save the file. Loaded value started with: {first5}"
+            "save the file."
         )
 
 

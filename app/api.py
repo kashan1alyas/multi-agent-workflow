@@ -1,29 +1,80 @@
 import threading
+import time
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app import cache as cache_store
+from app.config import (
+    CACHE_DIR,
+    FRONTEND_ORIGIN,
+    MAX_RUNS_PER_DAY,
+    MAX_RUNS_PER_IP_PER_DAY,
+    MAX_SECTIONS,
+    MAX_TOPIC_LENGTH,
+    RUN_TIMEOUT_SECONDS,
+)
 from app.pipeline import run_pipeline
 from app.report import build_markdown
 from app.schemas import Report
 
+_original_cache_filename = cache_store._cache_filename
+
+
+def _configured_cache_filename(key: str) -> str:
+    return str(CACHE_DIR / Path(_original_cache_filename(key)).name)
+
+
+cache_store._cache_filename = _configured_cache_filename
+
 app = FastAPI(title="Market Research Agents API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[FRONTEND_ORIGIN] if FRONTEND_ORIGIN else [],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 _jobs: dict[str, dict[str, Any]] = {}
+_active_ips: set[str] = set()
+_daily_runs: dict[str, int] = {}
+_daily_run_date = datetime.now(timezone.utc).date()
+_app_daily_runs = 0
 _jobs_lock = threading.Lock()
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "Invalid request. Check the topic and section limit.",
+            "detail": "Invalid request. Check the topic and section limit.",
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+async def safe_http_error_handler(
+    request: Request, exc: HTTPException
+) -> JSONResponse:
+    message = exc.detail if isinstance(exc.detail, str) else "Request failed."
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": message, "detail": message},
+        headers=exc.headers,
+    )
 
 
 @app.get("/health")
@@ -32,17 +83,57 @@ def health() -> dict[str, str]:
 
 
 class JobRequest(BaseModel):
-    topic: str
-    max_questions: int = Field(default=2, ge=1, le=20)
+    topic: str = Field(min_length=1, max_length=MAX_TOPIC_LENGTH)
+    max_questions: int = Field(default=2, ge=1, le=MAX_SECTIONS)
 
 
-def _run_job(job_id: str, topic: str, max_questions: int) -> None:
+def _reset_daily_counters_if_needed() -> None:
+    global _daily_run_date, _app_daily_runs
+    today = datetime.now(timezone.utc).date()
+    if today != _daily_run_date:
+        _daily_runs.clear()
+        _daily_run_date = today
+        _app_daily_runs = 0
+
+
+def _reserve_run(client_ip: str) -> None:
+    global _app_daily_runs
+    with _jobs_lock:
+        _reset_daily_counters_if_needed()
+        if client_ip in _active_ips:
+            raise HTTPException(
+                status_code=429,
+                detail="A research run is already active for this IP address.",
+            )
+        if _daily_runs.get(client_ip, 0) >= MAX_RUNS_PER_IP_PER_DAY:
+            raise HTTPException(
+                status_code=429,
+                detail="This IP address has reached its daily run limit.",
+            )
+        if _app_daily_runs >= MAX_RUNS_PER_DAY:
+            raise HTTPException(
+                status_code=429,
+                detail="The application has reached its daily run limit.",
+            )
+        _active_ips.add(client_ip)
+        _daily_runs[client_ip] = _daily_runs.get(client_ip, 0) + 1
+        _app_daily_runs += 1
+
+
+def _mark_timed_out(job: dict[str, Any]) -> None:
+    job["timed_out"] = True
+    job["status"] = "failed"
+    job["error"] = "Research run exceeded the time limit."
+
+
+def _run_job(job_id: str, topic: str, max_questions: int, client_ip: str) -> None:
     with _jobs_lock:
         job = _jobs[job_id]
         job["status"] = "running"
         job["progress"].append("Pipeline started")
 
     try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
         result = run_pipeline(topic=topic, max_sections=max_questions)
         if result is None:
             raise RuntimeError("Pipeline did not produce a report.")
@@ -53,19 +144,34 @@ def _run_job(job_id: str, topic: str, max_questions: int) -> None:
         )
         with _jobs_lock:
             job = _jobs[job_id]
-            job["result"] = serialized_result
-            job["progress"].append("Pipeline finished")
-            job["status"] = "done"
-    except Exception as exc:
+            if time.monotonic() - job["started_at"] >= RUN_TIMEOUT_SECONDS:
+                _mark_timed_out(job)
+            else:
+                job["result"] = serialized_result
+                job["progress"].append("Pipeline finished")
+                job["status"] = "done"
+    except Exception:
         with _jobs_lock:
             job = _jobs[job_id]
-            job["error"] = str(exc) or type(exc).__name__
-            job["progress"].append("Pipeline failed")
-            job["status"] = "failed"
+            if time.monotonic() - job["started_at"] >= RUN_TIMEOUT_SECONDS:
+                _mark_timed_out(job)
+            else:
+                job["error"] = "Research run failed. Please try again later."
+                job["progress"].append("Pipeline failed")
+                job["status"] = "failed"
+    finally:
+        with _jobs_lock:
+            _active_ips.discard(client_ip)
 
 
-@app.post("/api/jobs")
-def create_job(request: JobRequest) -> dict[str, str]:
+@app.post("/api/jobs", status_code=202)
+def create_job(request: JobRequest, http_request: Request) -> dict[str, str]:
+    global _app_daily_runs
+    if not request.topic.strip():
+        raise HTTPException(status_code=400, detail="Topic must not be empty.")
+
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    _reserve_run(client_ip)
     job_id = str(uuid.uuid4())
     with _jobs_lock:
         _jobs[job_id] = {
@@ -73,14 +179,27 @@ def create_job(request: JobRequest) -> dict[str, str]:
             "progress": [],
             "result": None,
             "error": None,
+            "timed_out": False,
+            "started_at": time.monotonic(),
         }
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job_id, request.topic, request.max_questions),
+        args=(job_id, request.topic, request.max_questions, client_ip),
         daemon=True,
     )
-    thread.start()
+    try:
+        thread.start()
+    except RuntimeError:
+        with _jobs_lock:
+            _jobs.pop(job_id, None)
+            _active_ips.discard(client_ip)
+            _daily_runs[client_ip] -= 1
+            _app_daily_runs -= 1
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to start the research run.",
+        ) from None
     return {"job_id": job_id}
 
 
@@ -89,7 +208,17 @@ def get_job(job_id: str) -> dict[str, Any]:
     with _jobs_lock:
         job = _jobs.get(job_id)
         if job is None:
-            raise HTTPException(status_code=404, detail="Job not found")
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if (
+            job["status"] in ("queued", "running")
+            and time.monotonic() - job["started_at"] >= RUN_TIMEOUT_SECONDS
+        ):
+            _mark_timed_out(job)
+        if job["timed_out"]:
+            raise HTTPException(
+                status_code=504,
+                detail="Research run exceeded the time limit.",
+            )
         return {
             "status": job["status"],
             "progress": list(job["progress"]),
@@ -101,3 +230,11 @@ def get_job(job_id: str) -> dict[str, Any]:
 @app.post("/api/reports/markdown")
 def report_markdown(report: Report) -> dict[str, str]:
     return {"markdown": build_markdown(report, include_empty=False)}
+
+
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+app.mount(
+    "/",
+    StaticFiles(directory=FRONTEND_DIST, html=True, check_dir=False),
+    name="frontend",
+)
