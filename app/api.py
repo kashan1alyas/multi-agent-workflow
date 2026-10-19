@@ -10,7 +10,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
 from app import cache as cache_store
 from app.config import (
@@ -58,10 +57,7 @@ async def invalid_request_handler(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=400,
-        content={
-            "error": "Invalid request. Check the topic and section limit.",
-            "detail": "Invalid request. Check the topic and section limit.",
-        },
+        content={"error": "Request validation failed."},
     )
 
 
@@ -78,13 +74,13 @@ async def safe_http_error_handler(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, str | int]:
+    return {"status": "ok", "max_sections": MAX_SECTIONS}
 
 
-class JobRequest(BaseModel):
-    topic: str = Field(min_length=1, max_length=MAX_TOPIC_LENGTH)
-    max_questions: int = Field(default=2, ge=1, le=MAX_SECTIONS)
+@app.get("/api/limits")
+def get_limits() -> dict[str, int]:
+    return {"max_sections": MAX_SECTIONS, "max_topic_length": MAX_TOPIC_LENGTH}
 
 
 def _reset_daily_counters_if_needed() -> None:
@@ -164,11 +160,51 @@ def _run_job(job_id: str, topic: str, max_questions: int, client_ip: str) -> Non
             _active_ips.discard(client_ip)
 
 
+def _job_request_error(message: str, field: str, limit: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"error": message, "field": field, "limit": limit},
+    )
+
+
 @app.post("/api/jobs", status_code=202)
-def create_job(request: JobRequest, http_request: Request) -> dict[str, str]:
+async def create_job(http_request: Request) -> Any:
     global _app_daily_runs
-    if not request.topic.strip():
-        raise HTTPException(status_code=400, detail="Topic must not be empty.")
+    try:
+        payload = await http_request.json()
+    except ValueError:
+        return _job_request_error(
+            "Request body must be valid JSON.", "request", MAX_SECTIONS
+        )
+    if not isinstance(payload, dict):
+        return _job_request_error(
+            "Request body must be a JSON object.", "request", MAX_SECTIONS
+        )
+
+    topic = payload.get("topic")
+    if not isinstance(topic, str) or not topic.strip():
+        return _job_request_error(
+            "Topic is required and must not be empty.", "topic", MAX_TOPIC_LENGTH
+        )
+    topic = topic.strip()
+    if len(topic) > MAX_TOPIC_LENGTH:
+        return _job_request_error(
+            f"Topic must be {MAX_TOPIC_LENGTH} characters or fewer.",
+            "topic",
+            MAX_TOPIC_LENGTH,
+        )
+
+    max_sections = payload.get("max_sections", 2)
+    if type(max_sections) is not int:
+        return _job_request_error(
+            "max_sections must be an integer.", "max_sections", MAX_SECTIONS
+        )
+    if max_sections < 1 or max_sections > MAX_SECTIONS:
+        return _job_request_error(
+            f"max_sections must be between 1 and {MAX_SECTIONS}.",
+            "max_sections",
+            MAX_SECTIONS,
+        )
 
     client_ip = http_request.client.host if http_request.client else "unknown"
     _reserve_run(client_ip)
@@ -185,7 +221,7 @@ def create_job(request: JobRequest, http_request: Request) -> dict[str, str]:
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job_id, request.topic, request.max_questions, client_ip),
+        args=(job_id, topic, max_sections, client_ip),
         daemon=True,
     )
     try:

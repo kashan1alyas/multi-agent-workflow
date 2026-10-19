@@ -15,7 +15,9 @@ async function request(path, options) {
     let message = `Request failed with status ${res.status}`;
     try {
       const body = await res.json();
-      if (body.detail) {
+      if (body.error) {
+        message = body.error;
+      } else if (body.detail) {
         message =
           typeof body.detail === "string"
             ? body.detail
@@ -30,11 +32,15 @@ async function request(path, options) {
   return res.json();
 }
 
-export function startJob(topic, maxQuestions) {
+export function getLimits() {
+  return request("/api/limits");
+}
+
+export function startJob(topic, maxSections) {
   return request("/api/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ topic, max_questions: maxQuestions }),
+    body: JSON.stringify({ topic, max_sections: maxSections }),
   });
 }
 
