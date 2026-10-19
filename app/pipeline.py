@@ -163,7 +163,7 @@ def run_pipeline(
                 )
             research_elapsed = time.time() - research_start
 
-            if research_result is None or not research_result.facts:
+            if research_result is None:
                 logger.warning(
                     "Section %d: No facts retrieved, marking as insufficient evidence.",
                     section_num,
@@ -187,6 +187,34 @@ def run_pipeline(
                     research_elapsed,
                 )
                 continue
+
+            if not research_result.facts:
+                if no_supervisor:
+                    logger.warning(
+                        "Section %d: No facts retrieved, marking as insufficient evidence.",
+                        section_num,
+                    )
+                    section_results.append(
+                        SectionResult(
+                            draft=SectionDraft(
+                                title=section_plan.title,
+                                content="Not enough verified information found.",
+                                source_urls=[],
+                            ),
+                            passed=False,
+                            issues=[Issue(claim="", problem="no facts retrieved")],
+                            sources=[],
+                            original_index=section_num,
+                        )
+                    )
+                    logger.info(
+                        "Section %d research finished in %.2fs (no facts)",
+                        section_num,
+                        research_elapsed,
+                    )
+                    continue
+                # else: fall through to supervisor loop with zero facts;
+                # the Supervisor will decide whether to search again or give up
 
             logger.info(
                 "Section %d research finished in %.2fs (%d facts)",
@@ -436,22 +464,50 @@ def run_pipeline(
                         len(revise_result["issues"]),
                     )
                 else:
-                    # Should not reach here, but fallback
-                    logger.warning(
-                        "Section %d: Supervisor did not reach 'enough' or 'give_up' state", section_num,
-                    )
-                    section_results.append(
-                        SectionResult(
-                            draft=SectionDraft(
-                                title=section_plan.title,
-                                content="Not enough verified information found.",
-                                source_urls=[],
-                            ),
-                            passed=False,
-                            issues=[Issue(claim="", problem="supervisor indecision")],
-                            sources=[],
-                            original_index=section_num,
+                    # Loop exhausted without reaching 'enough' or 'give_up'
+                    if research_result.facts:
+                        # Facts remain after max extra searches; treat as enough
+                        logger.info(
+                            "Section %d: Max extra searches reached (%d/%d), "
+                            "marking as enough after %d extra rounds",
+                            section_num,
+                            total_extra_searches,
+                            MAX_EXTRA_SEARCHES,
+                            MAX_EXTRA_ROUNDS_PER_SECTION,
                         )
+                        enough = True
+                    else:
+                        # No facts found after extra searches
+                        logger.warning(
+                            "Section %d: No facts found after extra searches, "
+                            "marking as insufficient",
+                            section_num,
+                        )
+                        section_results.append(
+                            SectionResult(
+                                draft=SectionDraft(
+                                    title=section_plan.title,
+                                    content="Not enough verified information found.",
+                                    source_urls=[],
+                                ),
+                                passed=False,
+                                issues=[Issue(claim="", problem="no facts found after extra searches")],
+                                sources=[],
+                                original_index=section_num,
+                            )
+                        )
+                        logger.info(
+                            "Section %d research finished in %.2fs (no facts after extra searches)",
+                            section_num,
+                            research_elapsed,
+                        )
+                        continue
+
+                    # If facts remain and enough is still False (edge case),
+                    # proceed as enough so the section is written
+                    logger.info(
+                        "Section %d: Facts remain after extra searches; proceeding as enough",
+                        section_num,
                     )
         except LLMProviderError:
             logger.exception("LLM provider failed while processing section %d", section_num)
