@@ -17,7 +17,7 @@ from app.config import (
     FRONTEND_ORIGIN,
     MAX_RUNS_PER_DAY,
     MAX_RUNS_PER_IP_PER_DAY,
-    MAX_SECTIONS,
+    MAX_SECTIONS_LIMIT,
     MAX_TOPIC_LENGTH,
     RUN_TIMEOUT_SECONDS,
 )
@@ -75,12 +75,15 @@ async def safe_http_error_handler(
 
 @app.get("/health")
 def health() -> dict[str, str | int]:
-    return {"status": "ok", "max_sections": MAX_SECTIONS}
+    return {"status": "ok", "max_sections": MAX_SECTIONS_LIMIT}
 
 
 @app.get("/api/limits")
 def get_limits() -> dict[str, int]:
-    return {"max_sections": MAX_SECTIONS, "max_topic_length": MAX_TOPIC_LENGTH}
+    return {
+        "max_sections": MAX_SECTIONS_LIMIT,
+        "max_topic_length": MAX_TOPIC_LENGTH,
+    }
 
 
 def _reset_daily_counters_if_needed() -> None:
@@ -122,7 +125,7 @@ def _mark_timed_out(job: dict[str, Any]) -> None:
     job["error"] = "Research run exceeded the time limit."
 
 
-def _run_job(job_id: str, topic: str, max_questions: int, client_ip: str) -> None:
+def _run_job(job_id: str, topic: str, max_sections: int, client_ip: str) -> None:
     with _jobs_lock:
         job = _jobs[job_id]
         job["status"] = "running"
@@ -130,7 +133,7 @@ def _run_job(job_id: str, topic: str, max_questions: int, client_ip: str) -> Non
 
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        result = run_pipeline(topic=topic, max_sections=max_questions)
+        result = run_pipeline(topic=topic, max_sections=max_sections)
         if result is None:
             raise RuntimeError("Pipeline did not produce a report.")
         serialized_result = (
@@ -174,11 +177,11 @@ async def create_job(http_request: Request) -> Any:
         payload = await http_request.json()
     except ValueError:
         return _job_request_error(
-            "Request body must be valid JSON.", "request", MAX_SECTIONS
+            "Request body must be valid JSON.", "request", MAX_SECTIONS_LIMIT
         )
     if not isinstance(payload, dict):
         return _job_request_error(
-            "Request body must be a JSON object.", "request", MAX_SECTIONS
+            "Request body must be a JSON object.", "request", MAX_SECTIONS_LIMIT
         )
 
     topic = payload.get("topic")
@@ -197,13 +200,15 @@ async def create_job(http_request: Request) -> Any:
     max_sections = payload.get("max_sections", 2)
     if type(max_sections) is not int:
         return _job_request_error(
-            "max_sections must be an integer.", "max_sections", MAX_SECTIONS
-        )
-    if max_sections < 1 or max_sections > MAX_SECTIONS:
-        return _job_request_error(
-            f"max_sections must be between 1 and {MAX_SECTIONS}.",
+            "max_sections must be an integer.",
             "max_sections",
-            MAX_SECTIONS,
+            MAX_SECTIONS_LIMIT,
+        )
+    if max_sections < 1 or max_sections > MAX_SECTIONS_LIMIT:
+        return _job_request_error(
+            f"max_sections must be between 1 and {MAX_SECTIONS_LIMIT}",
+            "max_sections",
+            MAX_SECTIONS_LIMIT,
         )
 
     client_ip = http_request.client.host if http_request.client else "unknown"

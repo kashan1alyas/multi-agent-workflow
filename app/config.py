@@ -22,10 +22,13 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 MAX_TOPIC_LENGTH = _positive_int_env("MAX_TOPIC_LENGTH", 200)
-MAX_SECTIONS = min(_positive_int_env("MAX_SECTIONS", 3), 3)
+MAX_SECTIONS_LIMIT = _positive_int_env("MAX_SECTIONS_LIMIT", 10)
+if MAX_SECTIONS_LIMIT > 20:
+    raise ValueError("MAX_SECTIONS_LIMIT must be 20 or less.")
+MAX_SECTIONS = MAX_SECTIONS_LIMIT
 MAX_RUNS_PER_IP_PER_DAY = _positive_int_env("MAX_RUNS_PER_IP_PER_DAY", 3)
 MAX_RUNS_PER_DAY = _positive_int_env("MAX_RUNS_PER_DAY", 30)
-RUN_TIMEOUT_SECONDS = _positive_int_env("RUN_TIMEOUT_SECONDS", 300)
+RUN_TIMEOUT_SECONDS = _positive_int_env("RUN_TIMEOUT_SECONDS", 900)
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").strip()
 CACHE_DIR = Path(
     os.getenv("CACHE_DIR", str(PROJECT_ROOT / ".cache"))

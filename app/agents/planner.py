@@ -1,93 +1,123 @@
 import logging
-from typing import List
+import re
+from typing import Iterable
 
-from pydantic import ValidationError
-
-from ..schemas import Plan, Section
 from ..llm import ask_json
+from ..schemas import Plan, Section
 
 logger = logging.getLogger(__name__)
 
+_WORD = re.compile(r"\b\w+\b", re.UNICODE)
+_MAX_ATTEMPTS = 3
 
-def plan(topic: str, max_questions: int = 5) -> Plan:
-    """Turn a topic into up to max_questions sections with searchable questions.
 
-    Each section includes a title, a research question, and a short search query
-    optimized for web search engines (5-10 words, keywords not full sentences).
+def _question_words(question: str) -> set[str]:
+    return {word.lower() for word in _WORD.findall(question)}
 
-    Args:
-        topic: The research topic.
 
-    Returns:
-        A Plan containing distinct sections with titles, questions, and search queries.
+def _duplicate_problem(sections: Iterable[Section]) -> str | None:
+    questions = list(sections)
+    for index, first in enumerate(questions):
+        first_words = _question_words(first.question)
+        if not first_words:
+            return f"Section {index + 1} has an empty question."
+        for other_index in range(index + 1, len(questions)):
+            second_words = _question_words(questions[other_index].question)
+            if not second_words:
+                return f"Section {other_index + 1} has an empty question."
+            shared_ratio = len(first_words & second_words) / min(
+                len(first_words), len(second_words)
+            )
+            if shared_ratio > 0.7:
+                return (
+                    f"Questions in sections {index + 1} and {other_index + 1} "
+                    "are near-duplicates; each pair must share no more than "
+                    "70 percent of its words."
+                )
+    return None
 
-    Raises:
-        ValueError: If max_questions is outside 1-20 or questions are duplicated.
-    """
-    if not 1 <= max_questions <= 20:
-        raise ValueError("max_questions must be between 1 and 20")
+
+def _validate_sections(sections: list[Section], n_sections: int) -> str | None:
+    if len(sections) != n_sections:
+        return f"Return exactly {n_sections} sections; returned {len(sections)}."
+    return _duplicate_problem(sections)
+
+
+def plan(topic: str, n_sections: int) -> Plan:
+    """Plan exactly n_sections distinct research angles for a topic."""
+    if not 1 <= n_sections <= 20:
+        raise ValueError("n_sections must be between 1 and 20")
 
     system_prompt = (
-        "You are a market research planner. Your task is to break down a topic into "
-        f"exactly {max_questions} research questions, each focusing on a different angle. "
-        "Questions must be distinct and must not overlap in topic. For each question, "
-        "provide a title, a full research question, and a short search query (5-10 words) "
-        "optimized for a web search engine (use keywords, not a full sentence).\n\n"
-        "If the topic names a country, region, or city, every question's search_query must "
-        "include it.\n\n"
-        "Cover different angles such as market size, trends, competitors, customers, "
-        "risks, and regulation. Do not repeat or overlap questions.\n\n"
+        "You are a market research planner. Produce exactly "
+        f"{n_sections} sections, each covering a clearly different angle. "
+        "Each section must include one searchable research question and a short "
+        "search_query of 5 to 10 keywords, not a full sentence. Questions must "
+        "not be duplicates or near-duplicates.\n\n"
+        "If the topic names a country, region, or city, every question's "
+        "search_query must include it.\n\n"
         "Respond with valid JSON matching this schema:\n"
         f"{Plan.model_json_schema()}"
     )
+    problem = ""
+    last_result: Plan | None = None
+    last_valid_count = 0
 
-    user_prompt = f"TOPIC: {topic}"
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        user_prompt = f"TOPIC: {topic}"
+        if problem:
+            user_prompt += (
+                f"\n\nThe previous response was invalid: {problem} "
+                f"Regenerate exactly {n_sections} valid sections."
+            )
+        try:
+            result: Plan = ask_json(
+                system=system_prompt,
+                user=user_prompt,
+                schema=Plan,
+                retries=2,
+            )
+        except ValueError as exc:
+            problem = f"The response did not validate as a Plan: {exc}"
+            last_result = None
+            last_valid_count = 0
+            continue
 
-    try:
-        result: Plan = ask_json(
-            system=system_prompt,
-            user=user_prompt,
-            schema=Plan,
-            retries=2,
-        )
-    except ValidationError as e:
-        raise ValueError(
-            f"LLM response did not validate as a Plan. Error: {e}"
-        )
+        last_result = result
+        problem = _validate_sections(result.sections, n_sections) or ""
+        if not problem:
+            logger.info(
+                "Plan created successfully: %d sections for topic '%s'",
+                len(result.sections),
+                topic,
+            )
+            return result
 
-    returned_count = len(result.sections)
-    if returned_count > max_questions:
+        valid_sections: list[Section] = []
+        for section in result.sections:
+            if _duplicate_problem([*valid_sections, section]) is None:
+                valid_sections.append(section)
+        last_valid_count = len(valid_sections)
+
+    if (
+        last_result is not None
+        and n_sections >= 4
+        and last_valid_count >= 4
+        and last_valid_count < n_sections
+    ):
+        valid_sections = []
+        for section in last_result.sections:
+            if _duplicate_problem([*valid_sections, section]) is None:
+                valid_sections.append(section)
+        last_result.sections = valid_sections
         logger.warning(
-            "Planner returned %d questions; keeping the first %d.",
-            returned_count,
-            max_questions,
+            "Planner returned %d of %d requested sections; using the valid sections.",
+            len(valid_sections),
+            n_sections,
         )
-        result.sections = result.sections[:max_questions]
-    elif returned_count < max_questions:
-        logger.warning(
-            "Planner returned %d of %d requested questions for topic '%s'; "
-            "using the questions returned.",
-            returned_count,
-            max_questions,
-            topic,
-        )
+        return last_result
 
-    # Validate no duplicate questions (case-insensitive)
-    questions = [s.question.lower().strip() for s in result.sections]
-    if len(questions) != len(set(questions)):
-        seen = {}
-        for s in result.sections:
-            q = s.question.lower().strip()
-            seen[q] = seen.get(q, 0) + 1
-        duplicates = {q: c for q, c in seen.items() if c > 1}
-        raise ValueError(
-            f"Duplicate questions found in plan: {duplicates}. "
-            f"All questions must be unique."
-        )
-
-    logger.info(
-        "Plan created successfully: %d sections for topic '%s'",
-        len(result.sections),
-        topic,
+    raise ValueError(
+        f"Planner could not produce {n_sections} valid sections after "
+        f"{_MAX_ATTEMPTS} attempts: {problem}"
     )
-    return result

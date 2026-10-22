@@ -9,3 +9,4 @@ fastapi
 uvicorn
 requests
 beautifulsoup4
+langgraph>=1.2.16,<2

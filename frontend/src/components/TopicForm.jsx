@@ -2,10 +2,10 @@ import { useState } from "react";
 
 export default function TopicForm({ onSubmit, disabled, maxSections, error }) {
   const [topic, setTopic] = useState("");
-  const [maxQuestions, setMaxQuestions] = useState(2);
+  const [sectionCount, setSectionCount] = useState(2);
   const displayedSections = maxSections == null
-    ? maxQuestions
-    : Math.min(maxSections, Math.max(1, Number(maxQuestions) || 1));
+    ? sectionCount
+    : Math.min(maxSections, Math.max(1, Number(sectionCount) || 1));
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -31,7 +31,7 @@ export default function TopicForm({ onSubmit, disabled, maxSections, error }) {
           min="1"
           max={maxSections ?? undefined}
           value={displayedSections}
-          onChange={(e) => setMaxQuestions(e.target.value)}
+          onChange={(e) => setSectionCount(e.target.value)}
         />
       </label>
 

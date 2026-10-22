@@ -64,31 +64,34 @@ def test_topic_length_limit_returns_400_without_echoing_input(client):
             {"topic": "Valid topic", "max_sections": "2"},
             "max_sections must be an integer.",
             "max_sections",
-            api.MAX_SECTIONS,
+            api.MAX_SECTIONS_LIMIT,
         ),
         (
             {"topic": "Valid topic", "max_sections": 1.5},
             "max_sections must be an integer.",
             "max_sections",
-            api.MAX_SECTIONS,
+            api.MAX_SECTIONS_LIMIT,
         ),
         (
             {"topic": "Valid topic", "max_sections": True},
             "max_sections must be an integer.",
             "max_sections",
-            api.MAX_SECTIONS,
+            api.MAX_SECTIONS_LIMIT,
         ),
         (
             {"topic": "Valid topic", "max_sections": 0},
-            f"max_sections must be between 1 and {api.MAX_SECTIONS}.",
+            f"max_sections must be between 1 and {api.MAX_SECTIONS_LIMIT}",
             "max_sections",
-            api.MAX_SECTIONS,
+            api.MAX_SECTIONS_LIMIT,
         ),
         (
-            {"topic": "Valid topic", "max_sections": api.MAX_SECTIONS + 1},
-            f"max_sections must be between 1 and {api.MAX_SECTIONS}.",
+            {
+                "topic": "Valid topic",
+                "max_sections": api.MAX_SECTIONS_LIMIT + 1,
+            },
+            f"max_sections must be between 1 and {api.MAX_SECTIONS_LIMIT}",
             "max_sections",
-            api.MAX_SECTIONS,
+            api.MAX_SECTIONS_LIMIT,
         ),
     ],
 )
@@ -142,7 +145,10 @@ def test_health_endpoint_is_available(client):
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "max_sections": api.MAX_SECTIONS}
+    assert response.json() == {
+        "status": "ok",
+        "max_sections": api.MAX_SECTIONS_LIMIT,
+    }
 
 
 def test_job_succeeds_with_matching_max_sections_field(client, monkeypatch, tmp_path):
@@ -177,15 +183,49 @@ def test_job_succeeds_with_matching_max_sections_field(client, monkeypatch, tmp_
     pipeline.assert_called_once_with(topic="A valid test topic", max_sections=2)
 
 
-def test_max_sections_is_capped_at_three(client):
+def test_max_sections_above_configured_limit_is_rejected(client):
     response = client.post(
         "/api/jobs",
-        json={"topic": "A valid test topic", "max_sections": 4},
+        json={
+            "topic": "A valid test topic",
+            "max_sections": api.MAX_SECTIONS_LIMIT + 1,
+        },
     )
 
     assert response.status_code == 400
-    assert response.json()["field"] == "max_sections"
-    assert response.json()["limit"] == 3
+    assert response.json() == {
+        "error": f"max_sections must be between 1 and {api.MAX_SECTIONS_LIMIT}",
+        "field": "max_sections",
+        "limit": api.MAX_SECTIONS_LIMIT,
+    }
+
+
+def test_max_sections_at_configured_limit_is_accepted(
+    client, monkeypatch, tmp_path
+):
+    pipeline_finished = Event()
+
+    def fake_pipeline(*, topic: str, max_sections: int) -> dict[str, str | int]:
+        pipeline_finished.set()
+        return {"topic": topic, "max_sections": max_sections}
+
+    pipeline = Mock(side_effect=fake_pipeline)
+    monkeypatch.setattr(api, "run_pipeline", pipeline)
+    monkeypatch.setattr(api, "CACHE_DIR", tmp_path / "cache")
+    response = client.post(
+        "/api/jobs",
+        json={
+            "topic": "A valid test topic",
+            "max_sections": api.MAX_SECTIONS_LIMIT,
+        },
+    )
+
+    assert response.status_code == 202
+    assert pipeline_finished.wait(timeout=2)
+    pipeline.assert_called_once_with(
+        topic="A valid test topic",
+        max_sections=api.MAX_SECTIONS_LIMIT,
+    )
 
 
 def test_expired_run_returns_504(client, monkeypatch):
