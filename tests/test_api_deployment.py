@@ -151,6 +151,13 @@ def test_health_endpoint_is_available(client):
     }
 
 
+def test_fastapi_metadata_uses_dossier_branding():
+    assert api.app.title == "Dossier Agents"
+    assert api.app.description == (
+        "Multi-agent research where every claim is cited and checked."
+    )
+
+
 def test_job_succeeds_with_matching_max_sections_field(client, monkeypatch, tmp_path):
     pipeline_finished = Event()
 

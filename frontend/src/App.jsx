@@ -84,7 +84,7 @@ export default function App() {
 
   return (
     <div className="container">
-      <h1>Market Research Agents</h1>
+      <h1>Dossier Agents</h1>
 
       <TopicForm
         onSubmit={handleSubmit}

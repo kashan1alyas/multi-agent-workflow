@@ -34,7 +34,10 @@ def _configured_cache_filename(key: str) -> str:
 
 cache_store._cache_filename = _configured_cache_filename
 
-app = FastAPI(title="Market Research Agents API")
+app = FastAPI(
+    title="Dossier Agents",
+    description="Multi-agent research where every claim is cited and checked.",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_ORIGIN] if FRONTEND_ORIGIN else [],
