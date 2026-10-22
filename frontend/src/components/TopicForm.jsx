@@ -1,13 +1,15 @@
 import { useState } from "react";
 
-export default function TopicForm({ onSubmit, disabled }) {
+export default function TopicForm({ onSubmit, disabled, maxSections, error }) {
   const [topic, setTopic] = useState("");
-  const [maxQuestions, setMaxQuestions] = useState(2);
+  const [sectionCount, setSectionCount] = useState(2);
+  const displayedSections = maxSections == null
+    ? sectionCount
+    : Math.min(maxSections, Math.max(1, Number(sectionCount) || 1));
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const questionCount = Math.min(20, Math.max(1, Number(maxQuestions) || 1));
-    onSubmit(topic.trim(), questionCount);
+    onSubmit(topic.trim(), displayedSections);
   };
 
   return (
@@ -23,20 +25,22 @@ export default function TopicForm({ onSubmit, disabled }) {
       </label>
 
       <label>
-        Max questions (1 to 20)
+        Max sections (1 to {maxSections ?? "…"})
         <input
           type="number"
           min="1"
-          max="20"
-          value={maxQuestions}
-          onChange={(e) => setMaxQuestions(e.target.value)}
+          max={maxSections ?? undefined}
+          value={displayedSections}
+          onChange={(e) => setSectionCount(e.target.value)}
         />
       </label>
-      {Number(maxQuestions) > 5 && (
-        <p>Large runs take longer and use more API quota.</p>
-      )}
 
-      <button type="submit" disabled={disabled || !topic.trim()}>
+      {error && <p className="error" role="alert">{error}</p>}
+
+      <button
+        type="submit"
+        disabled={disabled || maxSections == null || !topic.trim()}
+      >
         {disabled ? "Researching..." : "Start research"}
       </button>
     </form>

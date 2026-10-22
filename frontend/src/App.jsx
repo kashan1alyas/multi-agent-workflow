@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { startJob, getJob } from "./api";
+import { startJob, getJob, getLimits } from "./api";
 import TopicForm from "./components/TopicForm";
 import ProgressPanel from "./components/ProgressPanel";
 import ReportView from "./components/ReportView";
@@ -10,6 +10,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [maxSections, setMaxSections] = useState(null);
   const timerRef = useRef(null);
 
   const stopPolling = () => {
@@ -21,7 +22,16 @@ export default function App() {
 
   // Stop polling if the component unmounts
   useEffect(() => {
+    let cancelled = false;
+    getLimits()
+      .then((limits) => {
+        if (!cancelled) setMaxSections(limits.max_sections);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(`Could not load run limits: ${e.message}`);
+      });
     return () => {
+      cancelled = true;
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
@@ -74,11 +84,14 @@ export default function App() {
 
   return (
     <div className="container">
-      <h1>Market Research Agents</h1>
+      <h1>Dossier Agents</h1>
 
-      <TopicForm onSubmit={handleSubmit} disabled={busy} />
-
-      {error && <div className="error">{error}</div>}
+      <TopicForm
+        onSubmit={handleSubmit}
+        disabled={busy}
+        maxSections={maxSections}
+        error={error}
+      />
 
       {busy && <ProgressPanel status={status} messages={messages} />}
 

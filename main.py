@@ -63,7 +63,7 @@ def main():
         "--max-sections",
         type=int,
         default=None,
-        help="Maximum number of sections to process (for testing)",
+        help="Number of sections to process (1 to 20)",
     )
     parser.add_argument(
         "--max-rounds",
@@ -93,6 +93,8 @@ def main():
         help="Switch off the Supervisor gap-filling loop for comparison testing",
     )
     args = parser.parse_args()
+    if args.max_sections is not None and not 1 <= args.max_sections <= 20:
+        parser.error("--max-sections must be between 1 and 20")
     if args.no_cache:
         set_enabled(False)
 

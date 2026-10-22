@@ -13,6 +13,7 @@ from .config import (
     VERIFIER_MODEL,
     VERIFIER_PROVIDER,
 )
+from app.errors import DailyQuotaExceeded, LLMProviderError
 from app.cache import cache_get, cache_set
 from app.metrics import metrics
 
@@ -21,10 +22,6 @@ logger = logging.getLogger(__name__)
 
 # Two retries after the initial request.
 RETRY_DELAYS = (20, 40)
-
-
-class LLMProviderError(RuntimeError):
-    """An LLM provider request failed and should stop the pipeline."""
 
 
 def _sleep(seconds: int) -> None:
@@ -69,7 +66,7 @@ def ask(system: str, user: str, provider: str | None = None) -> str:
             is_invalid_error = "invalid" in lowered_error or "not found" in lowered_error
 
             if is_daily_quota:
-                raise LLMProviderError(
+                raise DailyQuotaExceeded(
                     f"Daily free quota exhausted for LLM provider {provider}: {err_str}"
                 ) from e
 
